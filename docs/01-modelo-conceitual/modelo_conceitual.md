@@ -11,7 +11,10 @@ Notação: Entidade-Relacionamento (Peter Chen), desenhado no **brModelo 3.31**.
 | `modelo_conceitual.brM3` | **Arquivo do brModelo 3** (Arquivo → Abrir). Formato nativo, versão 3.2.0 |
 | `modelo_conceitual_brmodelo.png` | Print do diagrama, renderizado pelo próprio brModelo |
 | `modelo_conceitual.xml` | O mesmo modelo no formato XML que o brModelo 3 também abre (fonte do `.brM3`) |
+| `modelo_conceitual_chen.png` | Segunda visualização do mesmo modelo (notação Chen com legenda e anotações, gerada por `scripts/gerar_diagramas.py`) |
 | `modelo_conceitual.md` | Este documento (descrição textual e decisões de modelagem) |
+
+![Modelo conceitual — versão anotada](modelo_conceitual_chen.png)
 
 Os três arquivos são gerados por `python3 scripts/gerar_brmodelo.py` (XML) e `scripts/brmodelo/ConverteBrM3.java`
 (abre o XML com as classes do brModelo e grava o `.brM3` e o PNG). Ver README.

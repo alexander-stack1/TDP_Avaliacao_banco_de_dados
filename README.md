@@ -16,6 +16,7 @@ SGBD alvo: **PostgreSQL 16**.
 │   │   ├── modelo_conceitual.brM3            # ARQUIVO DO BR MODELO 3 (abrir no brModelo)
 │   │   ├── modelo_conceitual_brmodelo.png    # print gerado pelo próprio brModelo
 │   │   ├── modelo_conceitual.xml             # mesmo modelo no XML nativo do brModelo (fonte)
+│   │   ├── modelo_conceitual_chen.png        # 2ª visualização (Chen anotado, matplotlib)
 │   │   └── modelo_conceitual.md              # descrição e decisões de modelagem
 │   ├── 02-modelo-logico/
 │   │   ├── modelo_logico.png                 # print (relacional, pé-de-galinha)
@@ -78,7 +79,7 @@ scripts/validar.sh
 ## Regerar artefatos
 
 ```bash
-python3 scripts/gerar_diagramas.py   # PNG do modelo lógico
+python3 scripts/gerar_diagramas.py   # PNGs: conceitual (Chen anotado) e lógico
 python3 scripts/gerar_brmodelo.py    # XML do brModelo 3
 scripts/gerar_brm3.sh                # XML → .brM3 + PNG usando o brModelo.jar (requer Java)
 python3 scripts/gerar_docx.py        # relatório ABNT em Word (requer: pip install python-docx pillow)

@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Gera o print (PNG) do modelo lógico (relacional, pé-de-galinha) do Case Bolsa
-de Valores. O modelo conceitual é desenhado no brModelo 3 (ver gerar_brmodelo.py).
+"""Gera os prints (PNG) do Case Bolsa de Valores:
+  - modelo conceitual em notação Chen (versão ilustrativa, matplotlib);
+  - modelo lógico relacional (pé-de-galinha).
+O modelo conceitual OFICIAL da entrega é o do brModelo 3 (ver gerar_brmodelo.py);
+este PNG é uma segunda visualização, com legenda e anotações.
 
 Uso:  python3 scripts/gerar_diagramas.py
-Saída: docs/02-modelo-logico/modelo_logico.png
+Saída: docs/01-modelo-conceitual/modelo_conceitual_chen.png
+       docs/02-modelo-logico/modelo_logico.png
 """
 from pathlib import Path
 
@@ -72,6 +76,97 @@ def leque(ax, cx, cy, itens, raio_x=9.0, raio_y=6.5, ang_ini=150, ang_fim=30):
         ay_ = cy + raio_y * math.sin(math.radians(t))
         liga(ax, (cx, cy), (ax_, ay_))
         atributo(ax, ax_, ay_, nome, chave=chave)
+
+
+# ----------------------------------------------------------------------------
+# 1) MODELO CONCEITUAL (Chen / brModelo)
+# ----------------------------------------------------------------------------
+def conceitual(saida: Path):
+    fig, ax = plt.subplots(figsize=(22, 13), dpi=150)
+    ax.set_xlim(-6, 113)
+    ax.set_ylim(-12, 66)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    fig.text(0.5, 0.965, "Modelo Conceitual — Negociações na Bolsa de Valores (notação Chen)",
+             ha="center", fontsize=16, fontweight="bold")
+
+    # posições
+    EMP, EMI, ACA, MAN, INV = (10, 44), (28, 44), (46, 44), (67, 44), (88, 44)
+    POS, COT = (46, 27), (46, 10)
+    REA, NEG, REF = (88, 27), (88, 10), (67, 10)
+
+    # linhas (antes das formas, para ficarem por baixo)
+    liga(ax, EMP, EMI); liga(ax, EMI, ACA)
+    liga(ax, ACA, MAN); liga(ax, MAN, INV)
+    liga(ax, ACA, POS); liga(ax, POS, COT)
+    liga(ax, INV, REA); liga(ax, REA, NEG)
+    liga(ax, NEG, REF); liga(ax, REF, ACA)
+
+    # entidades
+    entidade(ax, *EMP, "EMPRESA")
+    entidade(ax, *ACA, "AÇÃO")
+    entidade(ax, *INV, "INVESTIDOR")
+    entidade(ax, *COT, "COTAÇÃO", fraca=True)
+    entidade(ax, *NEG, "NEGOCIAÇÃO", w=16)
+
+    # relacionamentos
+    losango(ax, *EMI, "emite")
+    losango(ax, *MAN, "mantém\n(carteira)")
+    losango(ax, *POS, "possui", identificador=True)
+    losango(ax, *REA, "realiza")
+    losango(ax, *REF, "refere-se a")
+
+    # cardinalidades (min,max) — lidas do lado da entidade
+    cardinalidade(ax, 19.5, 45.6, "(1,n)")   # EMPRESA emite n ações
+    cardinalidade(ax, 37.5, 45.6, "(1,1)")   # AÇÃO pertence a 1 empresa
+    cardinalidade(ax, 55.5, 45.6, "(0,n)")   # AÇÃO mantida por n investidores
+    cardinalidade(ax, 78.5, 45.6, "(0,n)")   # INVESTIDOR mantém n ações
+    cardinalidade(ax, 47.8, 37.0, "(1,n)")   # AÇÃO possui n cotações
+    cardinalidade(ax, 47.8, 17.5, "(1,1)")   # COTAÇÃO pertence a 1 ação
+    cardinalidade(ax, 90.0, 37.0, "(0,n)")   # INVESTIDOR realiza n negociações
+    cardinalidade(ax, 90.0, 17.5, "(1,1)")   # NEGOCIAÇÃO é de 1 investidor
+    cardinalidade(ax, 76.5, 11.6, "(1,1)")   # NEGOCIAÇÃO refere-se a 1 ação
+    cardinalidade(ax, 53.5, 34.5, "(0,n)")   # AÇÃO é referida em n negociações
+
+    # atributos (posições explícitas para evitar sobreposição)
+    def atrs(centro, itens):
+        for nome, chave, pos in itens:
+            liga(ax, centro, pos); atributo(ax, *pos, nome, chave=chave)
+
+    atrs(EMP, [("id_empresa", True, (-1, 52)), ("cnpj", False, (4, 58)), ("nome", False, (12, 60)),
+               ("setor", False, (20, 57)), ("valor_mercado", False, (23, 51))])
+    atrs(ACA, [("id_acao", True, (35, 54)), ("ticker", False, (42, 60)),
+               ("tipo_acao", False, (52, 60)), ("ativa", False, (58, 54))])
+    atrs(INV, [("id_investidor", True, (74, 53)), ("documento\n(CPF/CNPJ)", False, (79, 60.5)),
+               ("tipo_investidor", False, (90, 62.5)), ("nome_completo", False, (101, 59.5)),
+               ("email", False, (105, 52)), ("telefone", False, (105, 45))])
+
+    # atributos do relacionamento mantém (carteira)
+    for nome, dx in (("quantidade", -5), ("preco_medio", 5)):
+        p = (MAN[0] + dx, MAN[1] - 10)
+        liga(ax, MAN, p); atributo(ax, *p, nome)
+
+    # atributos de COTAÇÃO (fraca): data_hora é chave parcial
+    for nome, dx, parcial in (("data_hora", -12, True), ("valor", 12, False)):
+        p = (COT[0] + dx, COT[1] - 1)
+        liga(ax, COT, p); atributo(ax, *p, nome, parcial=parcial)
+
+    # atributos de NEGOCIAÇÃO
+    atrs(NEG, [("id_negociacao", True, (70, 2)), ("data_hora", False, (79, -3)),
+               ("tipo_operacao", False, (89, -5)), ("quantidade", False, (99, -3)),
+               ("valor_unitario", False, (108, 2))])
+
+    # legenda
+    ax.text(-5, -8, "Legenda:  retângulo = entidade · retângulo duplo = entidade fraca · losango = relacionamento · "
+                    "losango duplo = relacionamento identificador · elipse = atributo · sublinhado = identificador · "
+                    "(mín,máx) = cardinalidade", fontsize=9, color="#374151")
+    ax.text(-5, -10.5, "Regras: Negociação e Cotação são entidades (um mesmo par investidor/ação negocia várias vezes; "
+                      "o preço varia ao longo do dia). Carteira é o relacionamento 'mantém' (uma posição por par).",
+            fontsize=9, color="#374151")
+
+    fig.savefig(saida, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
 
 
 # ----------------------------------------------------------------------------
@@ -232,6 +327,8 @@ def logico(saida: Path):
 
 
 if __name__ == "__main__":
+    c = RAIZ / "docs/01-modelo-conceitual/modelo_conceitual_chen.png"
     l = RAIZ / "docs/02-modelo-logico/modelo_logico.png"
+    conceitual(c)
     logico(l)
-    print("gerado:", l)
+    print("gerados:", c, l, sep="\n  ")
