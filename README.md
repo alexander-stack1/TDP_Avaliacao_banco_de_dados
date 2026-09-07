@@ -21,7 +21,8 @@ SGBD alvo: **PostgreSQL 16**.
 │   │   └── modelo_logico.md                  # notação textual, dicionário de dados, normalização
 │   ├── 03-modelo-fisico/
 │   │   └── modelo_fisico.md                  # guia do script SQL
-│   └── Entrega_Case_Bolsa_Valores.docx       # documento Word com conceitual + lógico (entrega)
+│   ├── Entrega_Case_Bolsa_Valores.docx       # relatório ABNT (NBR 14724) — Word editável
+│   └── Entrega_Case_Bolsa_Valores.pdf        # mesmo relatório em PDF (campos atualizados)
 ├── sql/
 │   ├── 00_bolsa_completo.sql        # ARQUIVO ÚNICO DA ENTREGA: DDL + DML + DQL
 │   ├── 01_ddl.sql                   # tabelas, constraints, índices, triggers, views
@@ -77,6 +78,6 @@ scripts/validar.sh
 ```bash
 python3 scripts/gerar_diagramas.py   # PNGs
 python3 scripts/gerar_brmodelo.py    # JSON do brModelo Web
-python3 scripts/gerar_docx.py        # Word (requer: pip install python-docx)
+python3 scripts/gerar_docx.py        # relatório ABNT em Word (requer: pip install python-docx pillow)
 scripts/build_sql.sh                 # sql/00_bolsa_completo.sql
 ```
