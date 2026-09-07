@@ -1,0 +1,37 @@
+# ---- Segredos e credenciais (NUNCA versionar) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials*.json
+service-account*.json
+.pgpass
+pgpass.conf
+*.token
+
+# ---- Sistema / editores ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---- Python (scripts auxiliares) ----
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# ---- Saídas temporárias ----
+*.log
+*.tmp
+tmp/
+scratch/
