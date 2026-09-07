@@ -1,111 +1,191 @@
 #!/usr/bin/env python3
-"""Gera o arquivo de modelo conceitual no formato JSON do brModelo Web
-(https://app.brmodeloweb.com → Importar). O conteúdo espelha exatamente o
-diagrama de docs/01-modelo-conceitual/modelo_conceitual.png.
+"""Gera o modelo conceitual no formato XML nativo do brModelo 3 (chcandido/brModelo).
+
+O brModelo 3 abre este XML diretamente (Arquivo → Abrir) e salva como .brM3.
+A conversão automática para .brM3 + PNG é feita por scripts/brmodelo/ConverteBrM3.java.
+
+Formato (lido de controlador.Diagrama.LoadFromXML e das classes do pacote
+diagramas.conceitual): raiz <DIAGRAMA TIPO="tpConceitual">, um elemento por
+forma (Entidade, Relacionamento, Atributo, Ligacao), identificado por ID.
+Cardinalidade: 0=(1,1) 1=(0,1) 2=(1,n) 3=(0,n). Ligação com Largura=2 é a
+linha dupla de entidade fraca.
 
 Uso:  python3 scripts/gerar_brmodelo.py
-Saída: docs/01-modelo-conceitual/modelo_conceitual.brmodelo.json
+Saída: docs/01-modelo-conceitual/modelo_conceitual.xml
 """
-import json
-import uuid
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 RAIZ = Path(__file__).resolve().parent.parent
-SAIDA = RAIZ / "docs/01-modelo-conceitual/modelo_conceitual.brmodelo.json"
+SAIDA = RAIZ / "docs/01-modelo-conceitual/modelo_conceitual.xml"
 
-cells = []
-z = 0
+C11, C01, C1N, C0N = 0, 1, 2, 3
+LEFT, RIGHT = 0, 1          # lado do círculo do atributo (DirecaoFromInspector)
 
-
-def novo(tipo, texto, x, y, w, h, extra=None):
-    global z
-    z += 1
-    cell = {
-        "type": tipo,
-        "position": {"x": x, "y": y},
-        "size": {"width": w, "height": h},
-        "angle": 0,
-        "id": str(uuid.uuid4()),
-        "z": z,
-        "attrs": {"text": {"text": texto}},
-    }
-    if extra:
-        cell.update(extra)
-    cells.append(cell)
-    return cell["id"]
+_id = 0
+elementos = []
+formas = {}                  # nome -> (id, cx, cy)
 
 
-def entidade(nome, x, y, fraca=False):
-    return novo("erd.WeakEntity" if fraca else "erd.Entity", nome, x, y, 110, 50)
+def novo_id():
+    global _id
+    _id += 1
+    return _id
 
 
-def relacionamento(nome, x, y, identificador=False):
-    return novo("erd.IdentifyingRelationship" if identificador else "erd.Relationship", nome, x, y, 110, 60)
+def _forma(tag, nome, x, y, w, h, extras=""):
+    i = novo_id()
+    elementos.append(
+        f'<{tag} ID="{i}">'
+        f'<Bounds Left="{x}" Top="{y}" Width="{w}" Height="{h}"/>'
+        f'<DisablePainted Valor="false"/>'
+        f'<Texto>{escape(nome)}</Texto><Observacao></Observacao><Dicionario></Dicionario>'
+        f'<Fonte Nome="Arial" Estilo="0" Tamanho="12"/>'
+        f'<Ancorado Valor="false"/>{extras}</{tag}>'
+    )
+    formas[nome] = (i, x + w // 2, y + h // 2)
+    return i
 
 
-def atributo(nome, x, y, chave=False, parcial=False):
-    tipo = "erd.Key" if chave else "erd.Attribute"
-    extra = {"attrs": {"text": {"text": nome}, ".outer": {"stroke-dasharray": "4 2"}}} if parcial else None
-    return novo(tipo, nome, x, y, 90, 30, extra)
+def entidade(nome, x, y, w=130, h=50):
+    return _forma("Entidade", nome, x, y, w, h, '<AtributosOcultos Valor=""/>')
 
 
-def liga(origem, destino, rotulo=None):
-    global z
-    z += 1
-    link = {
-        "type": "erd.Line",
-        "source": {"id": origem},
-        "target": {"id": destino},
-        "id": str(uuid.uuid4()),
-        "z": z,
-        "attrs": {},
-    }
-    if rotulo:
-        link["labels"] = [{"position": 0.2, "attrs": {"text": {"text": rotulo}}}]
-    cells.append(link)
+def relacionamento(nome, x, y, w=120, h=60):
+    return _forma("Relacionamento", nome, x, y, w, h)
 
 
-# ---------------- entidades e relacionamentos (mesmo layout do PNG) ----------------
-EMP = entidade("EMPRESA", 60, 300)
-EMI = relacionamento("emite", 250, 295)
-ACA = entidade("AÇÃO", 440, 300)
-MAN = relacionamento("mantém (carteira)", 650, 295)
-INV = entidade("INVESTIDOR", 860, 300)
-POS = relacionamento("possui", 440, 470, identificador=True)
-COT = entidade("COTAÇÃO", 440, 640, fraca=True)
-REA = relacionamento("realiza", 860, 470)
-NEG = entidade("NEGOCIAÇÃO", 860, 640)
-REF = relacionamento("refere-se a", 650, 640)
+def atributo(nome, x, y, chave=False, lado=LEFT, chave_parcial=False):
+    w = 8 * len(nome) + 24
+    extras = (f'<DirecaoFromInspector Valor="{lado}"/><Autosize Valor="true"/>'
+              f'<Identificador Valor="{str(chave).lower()}"/><Opcional Valor="false"/>'
+              f'<Multivalorado Valor="false"/><CardMinFromString Valor="1"/>'
+              f'<CardMaxFromString Valor="1"/><TipoAtributo Valor=""/>')
+    return _forma("Atributo", nome, x, y, w, 20, extras)
 
-# ---------------- ligações com cardinalidade (min,max) do lado da entidade ----------------
-liga(EMP, EMI, "(1,n)"); liga(ACA, EMI, "(1,1)")
-liga(ACA, MAN, "(0,n)"); liga(INV, MAN, "(0,n)")
-liga(ACA, POS, "(1,n)"); liga(COT, POS, "(1,1)")
-liga(INV, REA, "(0,n)"); liga(NEG, REA, "(1,1)")
-liga(ACA, REF, "(0,n)"); liga(NEG, REF, "(1,1)")
 
-# ---------------- atributos ----------------
-def atrs(dono, itens, x0, y0, dx=0, dy=40):
-    for i, item in enumerate(itens):
-        nome, chave = item[0], item[1]
-        parcial = item[2] if len(item) > 2 else False
-        a = atributo(nome, x0 + i * dx, y0 + i * dy, chave=chave, parcial=parcial)
-        liga(dono, a)
+formas_bounds = {}           # nome -> (x, y, w, h)
 
-atrs(EMP, [("id_empresa", True), ("cnpj", False), ("nome", False), ("setor", False), ("valor_mercado", False)],
-     40, 60, dx=0, dy=40)
-atrs(ACA, [("id_acao", True), ("ticker", False), ("tipo_acao", False), ("ativa", False)], 420, 100, dy=40)
-atrs(INV, [("id_investidor", True), ("documento (CPF/CNPJ)", False), ("tipo_investidor", False),
-           ("nome_completo", False), ("email", False), ("telefone", False)], 1040, 60, dy=40)
-atrs(MAN, [("quantidade", False), ("preco_medio", False)], 600, 400, dx=110, dy=0)
-atrs(COT, [("data_hora", False, True), ("valor", False)], 300, 640, dx=0, dy=40)
-atrs(NEG, [("id_negociacao", True), ("data_hora", False), ("tipo_operacao", False),
-           ("quantidade", False), ("valor_unitario", False)], 1040, 600, dy=40)
 
-modelo = {
-    "type": "conceptual",
-    "name": "Case Bolsa de Valores - Modelo Conceitual",
-    "model": {"cells": cells},
-}
-SAIDA.write_text(json.dumps(modelo, ensure_ascii=False, indent=2), encoding="utf-8")
-print("gerado:", SAIDA, f"({len(cells)} elementos)")
+def _registra(nome, x, y, w, h):
+    formas_bounds[nome] = (x, y, w, h)
+
+
+def borda(nome, lado, frac=0.5):
+    """Ponto sobre a borda de uma forma retangular: lado 'E' (esquerda), 'D' (direita),
+    'T' (topo) ou 'B' (base); frac = posição ao longo da borda (0..1)."""
+    x, y, w, h = formas_bounds[nome]
+    return {"E": (x, y + int(h * frac)), "D": (x + w, y + int(h * frac)),
+            "T": (x + int(w * frac), y), "B": (x + int(w * frac), y + h)}[lado]
+
+
+def circulo(nome):
+    """Ponto do círculo do atributo (lado da ligação principal)."""
+    x, y, w, h = formas_bounds[nome]
+    lado = atributos_lado[nome]
+    return (x + 8, y + h // 2) if lado == LEFT else (x + w - 8, y + h // 2)
+
+
+atributos_lado = {}
+
+
+def ligacao(a, b, card=None, dupla=False, papel="", pa=None, pb=None):
+    """Ligação entre duas formas. `card` (int) põe a cardinalidade do lado da forma `a`
+    (que deve ser a entidade). `dupla` = linha dupla (entidade fraca).
+    pa/pb: pontos de ancoragem (o brModelo escolhe a borda mais próxima e mantém a outra coordenada)."""
+    ia, ax, ay = formas[a]
+    ib, bx, by = formas[b]
+    if pa: ax, ay = pa
+    if pb: bx, by = pb
+    i = novo_id()
+    xml_card = ""
+    if card is not None:
+        ic = novo_id()
+        xml_card = (f'<Cardinalidade ID="{ic}">'
+                    f'<Bounds Left="{ax}" Top="{ay}" Width="40" Height="16"/>'
+                    f'<DisablePainted Valor="false"/><Observacao></Observacao><Dicionario></Dicionario>'
+                    f'<Ancorado Valor="false"/><TamanhoAutmatico Valor="true"/>'
+                    f'<Card Valor="{card}"/><MovimentacaoManual Valor="false"/>'
+                    f'<Papel Valor="{escape(papel)}"/></Cardinalidade>')
+    elementos.append(
+        f'<Ligacao ID="{i}"><DisablePainted Valor="false"/>'
+        f'<Tag LinhaMestre="-1"/><Dashed Valor="false"/><Ancorado Valor="false"/>'   # SuperLinha
+        f'<Inteligente Valor="false"/>'
+        f'<Largura Valor="{2 if dupla else 1}"/>'
+        f'<Ligacoes PontaA="{ia}" PontaB="{ib}"/>'
+        f'<Pontos><Ponto Left="{ax}" Top="{ay}"/><Ponto Left="{bx}" Top="{by}"/></Pontos>'
+        f'{xml_card}</Ligacao>'
+    )
+    return i
+
+
+def coluna(dono, itens, x_circulo, y0, lado_dono, dy=28, lado=LEFT, fracs=None):
+    """Coluna de atributos ao lado de `dono`. x_circulo = x do círculo; o texto fica do
+    lado oposto ao círculo. As linhas chegam à borda `lado_dono` do dono, espalhadas."""
+    n = len(itens)
+    for k, (nome, chave) in enumerate(itens):
+        w = 8 * len(nome) + 24
+        x = x_circulo - 8 if lado == LEFT else x_circulo + 8 - w
+        atributo(nome, x, y0 + k * dy, chave=chave, lado=lado)
+        atributos_lado[nome] = lado
+        _registra(nome, x, y0 + k * dy, w, 20)
+        frac = fracs[k] if fracs else (0.15 + 0.7 * k / max(n - 1, 1))
+        ligacao(nome, dono, pa=circulo(nome), pb=borda(dono, lado_dono, frac))
+
+
+# ------------------------------------------------------------------ entidades e relacionamentos
+def ent(nome, x, y, w=130, h=50):
+    entidade(nome, x, y, w, h); _registra(nome, x, y, w, h)
+
+
+def rel(nome, x, y, w=120, h=60):
+    relacionamento(nome, x, y, w, h); _registra(nome, x, y, w, h)
+
+
+ent("EMPRESA", 260, 320)
+rel("emite", 455, 315)
+ent("AÇÃO", 640, 320)
+rel("mantém", 860, 310, w=150, h=70)
+ent("INVESTIDOR", 1100, 320, w=140)
+rel("possui", 645, 490)
+ent("COTAÇÃO", 640, 660)
+rel("realiza", 1110, 490)
+ent("NEGOCIAÇÃO", 1100, 660, w=140)
+rel("refere-se a", 850, 655, w=140)
+
+# ------------------------------------------------------------------ ligações com cardinalidade
+# (a cardinalidade fica do lado da ENTIDADE — primeiro argumento; o brModelo a posiciona
+#  automaticamente junto ao ponto de ancoragem)
+ligacao("EMPRESA", "emite", C1N, pa=borda("EMPRESA", "D"), pb=borda("emite", "E"))
+ligacao("AÇÃO", "emite", C11, pa=borda("AÇÃO", "E"), pb=borda("emite", "D"))
+ligacao("AÇÃO", "mantém", C0N, pa=borda("AÇÃO", "D"), pb=borda("mantém", "E"))
+ligacao("INVESTIDOR", "mantém", C0N, pa=borda("INVESTIDOR", "E"), pb=borda("mantém", "D"))
+ligacao("AÇÃO", "possui", C1N, pa=borda("AÇÃO", "B", 0.35), pb=borda("possui", "T"))
+ligacao("COTAÇÃO", "possui", C11, dupla=True, pa=borda("COTAÇÃO", "T"), pb=borda("possui", "B"))
+ligacao("INVESTIDOR", "realiza", C0N, pa=borda("INVESTIDOR", "B"), pb=borda("realiza", "T"))
+ligacao("NEGOCIAÇÃO", "realiza", C11, pa=borda("NEGOCIAÇÃO", "T"), pb=borda("realiza", "B"))
+ligacao("AÇÃO", "refere-se a", C0N, pa=borda("AÇÃO", "B", 0.8), pb=borda("refere-se a", "T"))
+ligacao("NEGOCIAÇÃO", "refere-se a", C11, pa=borda("NEGOCIAÇÃO", "E"), pb=borda("refere-se a", "D"))
+
+# ------------------------------------------------------------------ atributos
+coluna("EMPRESA", [("id_empresa", True), ("cnpj", False), ("nome", False),
+                   ("setor", False), ("valor_mercado", False)],
+       x_circulo=230, y0=279, lado_dono="E", lado=RIGHT)
+coluna("AÇÃO", [("id_acao", True), ("ticker", False), ("tipo_acao", False), ("ativa", False)],
+       x_circulo=630, y0=150, lado_dono="T", lado=RIGHT, fracs=[0.66, 0.48, 0.3, 0.12])
+coluna("INVESTIDOR", [("id_investidor", True), ("documento (CPF/CNPJ)", False), ("tipo_investidor", False),
+                      ("nome_completo", False), ("email", False), ("telefone", False)],
+       x_circulo=1270, y0=262, lado_dono="D", lado=LEFT)
+coluna("mantém", [("quantidade", False)], x_circulo=905, y0=420, lado_dono="B", lado=RIGHT, fracs=[0.4])
+coluna("mantém", [("preco_medio", False)], x_circulo=965, y0=420, lado_dono="B", lado=LEFT, fracs=[0.6])
+coluna("NEGOCIAÇÃO", [("id_negociacao", True), ("data_hora", False), ("tipo_operacao", False),
+                      ("quantidade ", False), ("valor_unitario", False)],
+       x_circulo=1270, y0=604, lado_dono="D", lado=LEFT)
+coluna("COTAÇÃO", [("data_hora ", True), ("valor", False)],
+       x_circulo=610, y0=655, lado_dono="E", lado=RIGHT, fracs=[0.3, 0.7])   # data_hora = chave parcial
+
+xml = ('<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+       '<DIAGRAMA TIPO="tpConceitual" ID="0" UniversalUnicID="case-bolsa-valores-conceitual">\n'
+       + "\n".join(elementos) + "\n</DIAGRAMA>\n")
+SAIDA.write_text(xml, encoding="utf-8")
+print("gerado:", SAIDA, f"({len(elementos)} elementos)")

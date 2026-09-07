@@ -1,16 +1,20 @@
 # Modelo Conceitual — Negociações na Bolsa de Valores
 
-Notação: Entidade-Relacionamento (Peter Chen), como no BR Modelo.
+Notação: Entidade-Relacionamento (Peter Chen), desenhado no **brModelo 3.31**.
 
-![Modelo conceitual](modelo_conceitual.png)
+![Modelo conceitual no brModelo](modelo_conceitual_brmodelo.png)
 
 ## Arquivos
 
 | Arquivo | Conteúdo |
 |---|---|
-| `modelo_conceitual.png` | Print do diagrama |
-| `modelo_conceitual.brmodelo.json` | Modelo para importar no **brModelo Web** (app.brmodeloweb.com → *Importar*) |
-| `modelo_conceitual.md` | Este documento (descrição textual + roteiro para recriar no brModelo desktop) |
+| `modelo_conceitual.brM3` | **Arquivo do brModelo 3** (Arquivo → Abrir). Formato nativo, versão 3.2.0 |
+| `modelo_conceitual_brmodelo.png` | Print do diagrama, renderizado pelo próprio brModelo |
+| `modelo_conceitual.xml` | O mesmo modelo no formato XML que o brModelo 3 também abre (fonte do `.brM3`) |
+| `modelo_conceitual.md` | Este documento (descrição textual e decisões de modelagem) |
+
+Os três arquivos são gerados por `python3 scripts/gerar_brmodelo.py` (XML) e `scripts/brmodelo/ConverteBrM3.java`
+(abre o XML com as classes do brModelo e grava o `.brM3` e o PNG). Ver README.
 
 ## Entidades
 
@@ -40,12 +44,9 @@ Notação: Entidade-Relacionamento (Peter Chen), como no BR Modelo.
 4. **Empresa separada de Ação.** O enunciado fala em "ação pertence a uma empresa" e a mesma companhia pode ter mais de um papel (ex.: PETR3 e PETR4). Nome, setor e valor de mercado ficam na EMPRESA; o ticker fica na AÇÃO.
 5. **Investidor identificado por CPF ou CNPJ.** Um único atributo `documento` guarda o CPF (PF) ou o CNPJ (PJ), qualificado por `tipo_investidor`. No físico isso vira UNIQUE + CHECK (11 ou 14 dígitos conforme o tipo).
 
-## Roteiro para recriar no BR Modelo (desktop)
+## Como abrir e editar no brModelo
 
-1. *Arquivo → Novo → Conceitual*.
-2. Criar as 5 entidades (retângulo); marcar COTAÇÃO como **fraca**.
-3. Criar os 5 relacionamentos (losango); marcar *possui* como **identificador**.
-4. Ligar cada relacionamento às entidades e definir as cardinalidades da tabela acima (clique na linha → cardinalidade).
-5. Adicionar os atributos; marcar os `id_*` como **identificador** e `data_hora` de COTAÇÃO como identificador da entidade fraca.
-6. Adicionar `quantidade` e `preco_medio` ao relacionamento *mantém*.
-7. Salvar como `modelo_conceitual.brM3` nesta pasta.
+1. Baixe o brModelo 3.31 (`brModelo.jar`) em https://github.com/chcandido/brModelo/releases e execute com `java -jar brModelo.jar` (requer Java 8+).
+2. *Arquivo → Abrir* e selecione `modelo_conceitual.brM3` (ou o `.xml`).
+3. Entidade fraca: a ligação COTAÇÃO — *possui* está com linha dupla (propriedade *Entidade fraca* da ligação); `data_hora` está marcado como identificador (chave parcial).
+4. Para gerar o modelo lógico automaticamente: *Arquivo → Converter para lógico*.

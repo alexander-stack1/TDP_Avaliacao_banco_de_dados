@@ -13,9 +13,10 @@ SGBD alvo: **PostgreSQL 16**.
 ├── .env.example                     # modelo de variáveis de conexão (sem valores reais)
 ├── docs/
 │   ├── 01-modelo-conceitual/
-│   │   ├── modelo_conceitual.png             # print (notação Chen / brModelo)
-│   │   ├── modelo_conceitual.brmodelo.json   # arquivo para importar no brModelo Web
-│   │   └── modelo_conceitual.md              # descrição + roteiro p/ BR Modelo desktop
+│   │   ├── modelo_conceitual.brM3            # ARQUIVO DO BR MODELO 3 (abrir no brModelo)
+│   │   ├── modelo_conceitual_brmodelo.png    # print gerado pelo próprio brModelo
+│   │   ├── modelo_conceitual.xml             # mesmo modelo no XML nativo do brModelo (fonte)
+│   │   └── modelo_conceitual.md              # descrição e decisões de modelagem
 │   ├── 02-modelo-logico/
 │   │   ├── modelo_logico.png                 # print (relacional, pé-de-galinha)
 │   │   └── modelo_logico.md                  # notação textual, dicionário de dados, normalização
@@ -31,8 +32,9 @@ SGBD alvo: **PostgreSQL 16**.
 └── scripts/
     ├── build_sql.sh                 # concatena 01+02+03 → 00
     ├── validar.sh                   # cria banco descartável e executa tudo
-    ├── gerar_diagramas.py           # gera os PNGs (matplotlib)
-    ├── gerar_brmodelo.py            # gera o JSON do brModelo Web
+    ├── gerar_diagramas.py           # gera o PNG do modelo lógico (matplotlib)
+    ├── gerar_brmodelo.py            # gera o XML nativo do brModelo 3
+    ├── brmodelo/ConverteBrM3.java   # abre o XML com as classes do brModelo → .brM3 + PNG
     └── gerar_docx.py                # gera o Word da entrega
 ```
 
@@ -76,8 +78,9 @@ scripts/validar.sh
 ## Regerar artefatos
 
 ```bash
-python3 scripts/gerar_diagramas.py   # PNGs
-python3 scripts/gerar_brmodelo.py    # JSON do brModelo Web
+python3 scripts/gerar_diagramas.py   # PNG do modelo lógico
+python3 scripts/gerar_brmodelo.py    # XML do brModelo 3
+scripts/gerar_brm3.sh                # XML → .brM3 + PNG usando o brModelo.jar (requer Java)
 python3 scripts/gerar_docx.py        # relatório ABNT em Word (requer: pip install python-docx pillow)
 scripts/build_sql.sh                 # sql/00_bolsa_completo.sql
 ```

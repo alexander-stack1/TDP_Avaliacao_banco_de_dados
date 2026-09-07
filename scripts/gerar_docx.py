@@ -29,7 +29,7 @@ from docx.shared import Cm, Pt, RGBColor
 
 RAIZ = Path(__file__).resolve().parent.parent
 SAIDA = RAIZ / "docs/Entrega_Case_Bolsa_Valores.docx"
-PNG_CONC = RAIZ / "docs/01-modelo-conceitual/modelo_conceitual.png"
+PNG_CONC = RAIZ / "docs/01-modelo-conceitual/modelo_conceitual_brmodelo.png"
 PNG_LOG = RAIZ / "docs/02-modelo-logico/modelo_logico.png"
 
 # ------------------------------------------------------------------ metadados
@@ -450,7 +450,7 @@ texto(
 
 # figura em página paisagem
 nova_secao(paisagem=True)
-figura(PNG_CONC, "Modelo conceitual em notação Entidade-Relacionamento (Chen)", LARGURA_UTIL_PAISAGEM_CM)
+figura(PNG_CONC, "Modelo conceitual em notação Entidade-Relacionamento, elaborado no brModelo 3.31", LARGURA_UTIL_PAISAGEM_CM)
 nova_secao(paisagem=False)
 
 titulo_numerado(2, "Entidades e atributos")
