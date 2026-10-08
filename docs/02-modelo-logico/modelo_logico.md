@@ -65,15 +65,15 @@ CARTEIRA   (id_investidor, id_acao, quantidade, preco_medio, atualizado_em)
 | documento | text | NOT NULL, UNIQUE, 11 dígitos se PF / 14 se PJ | CPF ou CNPJ |
 | tipo_investidor | text | NOT NULL, IN (PF, PJ) | Pessoa física ou jurídica |
 | nome_completo | text | NOT NULL | Nome / razão social |
-| email | text | NOT NULL, UNIQUE, formato válido | E-mail de contato |
-| telefone | text | NULL, 10–11 dígitos | Telefone |
+| email | text | NOT NULL, UNIQUE, formato básico | E-mail de contato |
+| telefone | text | NOT NULL, 10–11 dígitos | Telefone |
 | criado_em | timestamptz | NOT NULL, default now() | Data de cadastro |
 
 ### COTACAO
 | Coluna | Tipo | Restrições | Descrição |
 |---|---|---|---|
 | id_cotacao | bigint identity | PK | Identificador |
-| id_acao | bigint | NOT NULL, FK → acao (CASCADE) | Ação cotada |
+| id_acao | bigint | NOT NULL, FK → acao (RESTRICT) | Ação cotada |
 | data_hora | timestamptz | NOT NULL, UNIQUE com id_acao | Instante da cotação |
 | valor | numeric(12,4) | NOT NULL, > 0 | Preço |
 
@@ -102,7 +102,8 @@ CARTEIRA   (id_investidor, id_acao, quantidade, preco_medio, atualizado_em)
 
 - **1FN**: todos os atributos são atômicos (telefone único, documento único; nada de listas em coluna).
 - **2FN**: a única PK composta é a de CARTEIRA; `quantidade`, `preco_medio` e `atualizado_em` dependem do par inteiro (investidor **e** ação).
-- **3FN**: nenhum atributo depende de outro não-chave. Nome, setor e valor de mercado da empresa ficaram na EMPRESA, não na AÇÃO (evita repetir dados da companhia em cada papel). `valor_total` é derivado, mas materializado como coluna **gerada** pelo SGBD, portanto nunca fica inconsistente.
+- **3FN na base cadastral e nos fatos independentes**: os dados da companhia ficam em EMPRESA e não se repetem em cada papel. A dependência do ticker determina a ação e sua emissora; o documento determina o investidor.
+- **Materializações deliberadas no físico**: `negociacao.valor_total` depende de quantidade e valor unitário, portanto a tabela física com esse derivado não deve ser descrita como estritamente em 3FN. A coluna gerada impede divergência. CARTEIRA também materializa informação recalculável do histórico e é mantida exclusivamente pelos triggers; não é fonte independente de saldo.
 
 ## Regras de negócio levadas ao modelo físico
 
@@ -115,3 +116,9 @@ CARTEIRA   (id_investidor, id_acao, quantidade, preco_medio, atualizado_em)
 | Não vender mais do que se possui | validação no trigger (exceção) |
 | Negociação é registro contábil, imutável | trigger que bloqueia UPDATE/DELETE |
 | Análise retrospectiva pelo histórico de cotações | função `fn_carteira_em(investidor, momento)` |
+
+## Premissas temporais e extensões
+
+O cadastro admite empresa sem ação e ação sem cotação (0:N). Negociações entram em instantes estritamente crescentes por par investidor/ação, serializadas pelo bloqueio da posição. `carteira.atualizado_em` guarda o instante da última negociação, não o horário de execução do SQL. Negociações com instante anterior ou igual são rejeitadas.
+
+A view `vw_evolucao_carteira` recompõe o custo médio móvel por operação. Compras ponderam apenas a posição remanescente; vendas preservam o preço médio até a liquidação; uma liquidação zera a base. Tanto a view quanto a carteira usam quatro casas decimais para o preço médio. Ausência de cotação é NULL e não preço zero. São escolhas do case, sem taxas, tributos ou eventos societários.

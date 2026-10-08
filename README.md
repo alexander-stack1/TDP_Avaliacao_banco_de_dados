@@ -1,87 +1,96 @@
-# Case — Negociações na Bolsa de Valores
+# Case Negociações na Bolsa de Valores
 
-Modelagem de banco de dados (conceitual, lógico e físico) para o sistema de uma corretora que gerencia **investidores**, **ações**, **negociações**, **histórico de cotações** e **saldo de carteira**.
+Trabalho de modelagem conceitual, lógica e física para a disciplina **Transformando Dados em Percepção**, revisado conforme as páginas 2 e 3 do PDF da atividade. SGBD: **PostgreSQL 16**.
 
-SGBD alvo: **PostgreSQL 16**.
+A entrega reúne investidores, empresas, ações, negociações, histórico de cotações e carteira atualizada pelas negociações. O Word documenta as escolhas; o SQL demonstra DDL, DML e 16 consultas. O prazo informado no PDF é **18/10**, sem ano explícito, e o grupo pode ter até cinco integrantes.
 
-## Estrutura do repositório
+## Arquivos para a entrega
 
-```
-.
-├── README.md
-├── .gitignore                       # segredos (.env, chaves, credenciais) nunca são versionados
-├── .env.example                     # modelo de variáveis de conexão (sem valores reais)
-├── docs/
-│   ├── 01-modelo-conceitual/
-│   │   ├── modelo_conceitual.brM3            # ARQUIVO DO BR MODELO 3 (abrir no brModelo)
-│   │   ├── modelo_conceitual_brmodelo.png    # print gerado pelo próprio brModelo
-│   │   ├── modelo_conceitual.xml             # mesmo modelo no XML nativo do brModelo (fonte)
-│   │   ├── modelo_conceitual_chen.png        # 2ª visualização (Chen anotado, matplotlib)
-│   │   └── modelo_conceitual.md              # descrição e decisões de modelagem
-│   ├── 02-modelo-logico/
-│   │   ├── modelo_logico.png                 # print (relacional, pé-de-galinha)
-│   │   └── modelo_logico.md                  # notação textual, dicionário de dados, normalização
-│   ├── 03-modelo-fisico/
-│   │   └── modelo_fisico.md                  # guia do script SQL
-│   ├── Entrega_Case_Bolsa_Valores.docx       # relatório ABNT (NBR 14724) — Word editável
-│   └── Entrega_Case_Bolsa_Valores.pdf        # mesmo relatório em PDF (campos atualizados)
-├── sql/
-│   ├── 00_bolsa_completo.sql        # ARQUIVO ÚNICO DA ENTREGA: DDL + DML + DQL
-│   ├── 01_ddl.sql                   # tabelas, constraints, índices, triggers, views
-│   ├── 02_dml.sql                   # carga de exemplo + demonstração das regras
-│   └── 03_dql.sql                   # 16 consultas analíticas
-└── scripts/
-    ├── build_sql.sh                 # concatena 01+02+03 → 00
-    ├── validar.sh                   # cria banco descartável e executa tudo
-    ├── gerar_diagramas.py           # gera o PNG do modelo lógico (matplotlib)
-    ├── gerar_brmodelo.py            # gera o XML nativo do brModelo 3
-    ├── brmodelo/ConverteBrM3.java   # abre o XML com as classes do brModelo → .brM3 + PNG
-    └── gerar_docx.py                # gera o Word da entrega
-```
+| Exigência do PDF | Arquivos |
+|---|---|
+| Conceitual no brModelo, arquivo e print | `docs/01-modelo-conceitual/modelo_conceitual.brM3` e `modelo_conceitual_brmodelo.png` |
+| Lógico textual ou gráfico, arquivo e print | `docs/02-modelo-logico/modelo_logico.md` e `modelo_logico.png` |
+| Físico com DDL, DML e DQL | `sql/00_bolsa_completo.sql` |
+| Word sugerido com os resultados | `docs/Entrega_Case_Bolsa_Valores.docx` |
+| PDF complementar | `docs/Entrega_Case_Bolsa_Valores.pdf` |
 
-## Modelo em uma olhada
+**Antes do envio:** preencher instituição, curso, cidade e integrantes da capa. A disciplina e o professor foram identificados no enunciado. Não foram presumidos os integrantes ou o nome exato do curso.
+
+Para preencher os metadados sem editar o gerador, copie `docs/metadados.example.json` para `docs/metadados.local.json`, complete os campos e gere novamente o Word e o PDF. O arquivo local de metadados é ignorado pelo Git. A geração do Word sozinha não atualiza o PDF; exporte a mesma versão antes de empacotar.
+
+## Estrutura e decisões
 
 | Entidade | Papel |
 |---|---|
-| EMPRESA | Companhia listada (CNPJ, nome, setor, valor de mercado) |
-| AÇÃO | Papel negociado, identificado pelo ticker; pertence a uma empresa |
-| INVESTIDOR | Cliente PF (CPF) ou PJ (CNPJ) |
-| NEGOCIAÇÃO | Compra ou venda de uma ação por um investidor (data/hora, tipo, quantidade, preço) |
-| COTAÇÃO | Preço de uma ação em um instante (série temporal) |
-| CARTEIRA | Posição atual por investidor e ação, derivada das negociações |
+| EMPRESA | Companhia emissora, com nome, setor e valor de mercado |
+| ACAO | Papel identificado por ticker, associado a uma empresa |
+| INVESTIDOR | Pessoa física ou jurídica identificada por documento único |
+| NEGOCIACAO | Ocorrência de compra ou venda com instante, quantidade e preço |
+| COTACAO | Preço de uma ação em um instante, com unicidade do par |
+| CARTEIRA | Posição materializada por investidor e ação |
 
-Detalhes e justificativas: [conceitual](docs/01-modelo-conceitual/modelo_conceitual.md) · [lógico](docs/02-modelo-logico/modelo_logico.md) · [físico](docs/03-modelo-fisico/modelo_fisico.md).
+As descrições ficam em [conceitual](docs/01-modelo-conceitual/modelo_conceitual.md), [lógico](docs/02-modelo-logico/modelo_logico.md) e [físico](docs/03-modelo-fisico/modelo_fisico.md). A [revisão](docs/REVISAO.md) registra a cobertura do enunciado, correções e validações.
 
-## Executar o modelo físico
+Premissas adicionais do projeto, distintas das exigências do professor:
+
+- Sem venda descoberta; negociações não aceitam UPDATE, DELETE ou TRUNCATE.
+- Para cada par investidor/ação, os instantes das negociações são estritamente crescentes. Operações retroativas ou com o mesmo instante no mesmo par são rejeitadas. Pares diferentes têm ordem independente.
+- Carteira só é alterada pelo trigger de negociação; a linha é preservada com quantidade e preço médio zero após liquidação.
+- Preço médio móvel arredondado a quatro casas a cada compra, sem taxas, tributos, estornos ou eventos societários. É uma extensão didática.
+- CPF/CNPJ têm validação de tamanho e caracteres, sem dígitos verificadores; ticker e telefone também usam formatos simplificados. Os dados são sintéticos e os preços não representam o mercado real.
+- Empresa pode existir antes da primeira ação, e ação antes da primeira cotação. Uma posição sem cotação tem valor desconhecido (`NULL`).
+- O esquema cadastral é normalizado; `valor_total` e CARTEIRA são materializações derivadas explicitamente documentadas.
+
+## Executar em PostgreSQL
+
+Use um **banco novo** e um usuário que possa criar esquema nele. Não é necessário superusuário nem `CREATEROLE`. O SQL não exclui dados e recusa o esquema `bolsa` se ele já existir.
 
 ```bash
-cp .env.example .env          # ajuste usuário/senha; o .env não é versionado
 createdb bolsa_valores
-psql -v ON_ERROR_STOP=1 -d bolsa_valores -f sql/00_bolsa_completo.sql
+psql -X -v ON_ERROR_STOP=1 -d bolsa_valores -f sql/00_bolsa_completo.sql
 ```
 
-Validação automática em banco descartável:
+A conexão usa os mecanismos nativos do PostgreSQL (`PGHOST`, `PGPORT`, `PGUSER`, prompt de senha ou `.pgpass`). `.env.example` é somente uma referência de variáveis: **os scripts não carregam `.env` automaticamente**. Não é necessário preencher credenciais para a validação isolada.
+
+## Validar sem acessar bancos existentes
+
+Requer os executáveis do PostgreSQL 16 (`initdb`, `pg_ctl`, `createuser`, `createdb`, `psql`) e Python 3 no PATH. Execute com usuário comum do sistema, pois `initdb` não funciona como root.
 
 ```bash
+scripts/build_sql.sh
 scripts/validar.sh
 ```
 
-## Padrões adotados
+O validador cria uma instância temporária com socket Unix exclusivo, sem acesso TCP, executa com um usuário sem superprivilégios, testa reexecução segura e executa regressões de integridade, custo médio, histórico e concorrência. Encerra e remove apenas essa instância ao sair. **Não recebe nome de banco e não usa servidores já instalados.** Evidências ficam em `tmp/validacao/` (ignorado pelo Git).
 
-- Identificadores em `snake_case`; prefixos `pk_`, `fk_`, `uq_`, `ck_`, `ix_`, `trg_`, `fn_`, `vw_`.
-- PKs `bigint IDENTITY`; chaves naturais (CPF/CNPJ, ticker, CNPJ da empresa) como `UNIQUE`.
-- `text` em vez de `varchar(n)`, `numeric` para dinheiro, `timestamptz` para data/hora.
-- Regras de negócio no banco: `CHECK`, `UNIQUE`, FKs com ação explícita, triggers para a carteira e para a imutabilidade das negociações.
-- Toda FK indexada; índices compostos com colunas de igualdade antes das de intervalo; BRIN na série temporal.
-- Papel de leitura separado (`bolsa_leitura`) para analistas.
-- Nenhum segredo no repositório: conexão via `.env` (ignorado) a partir de `.env.example`.
+A revisão de 07/10/2026 passou em PostgreSQL 16.15. A carga tem 6 investidores, 7 empresas, 8 ações, 607 cotações e 19 negociações. O período de demonstração contém cinco dias úteis de 31/08 a 04/09/2026 e oito preços adicionais em 08/09.
 
-## Regerar artefatos
+## Regerar os artefatos
+
+Os fontes SQL são `sql/01_ddl.sql`, `sql/02_dml.sql` e `sql/03_dql.sql`. Edite-os e depois gere o consolidado.
 
 ```bash
-python3 scripts/gerar_diagramas.py   # PNGs: conceitual (Chen anotado) e lógico
-python3 scripts/gerar_brmodelo.py    # XML do brModelo 3
-scripts/gerar_brm3.sh                # XML → .brM3 + PNG usando o brModelo.jar (requer Java)
-python3 scripts/gerar_docx.py        # relatório ABNT em Word (requer: pip install python-docx pillow)
-scripts/build_sql.sh                 # sql/00_bolsa_completo.sql
+scripts/build_sql.sh
+scripts/build_sql.sh --check
+python3 scripts/gerar_diagramas.py      # requer matplotlib
+scripts/gerar_brm3.sh                   # requer Java e brModelo 3.31
+python3 scripts/gerar_docx.py           # requer python-docx e Pillow
 ```
+
+O gerador cria sumário e listas com os títulos atuais. Para preencher seus números de página, exporte uma primeira versão do Word para PDF e execute:
+
+```bash
+python3 scripts/gerar_docx.py --indice-pdf docs/Entrega_Case_Bolsa_Valores.pdf
+```
+
+Esse passo requer `pypdf`. Exporte novamente o Word para o mesmo PDF e confira a paginação; se uma mudança alterar o número de páginas, repita o passo. Os índices são estáticos e precisam dessa atualização após mudanças de conteúdo. Verifique a diagramação e gere o pacote:
+
+```bash
+python3 scripts/gerar_entrega.py
+```
+
+O ZIP fica em `output/entrega/Entrega_Case_Bolsa_Valores.zip`. O `.xml` conceitual e a visualização Chen anotada permanecem como fontes auxiliares no repositório; o arquivo oficial editável do conceitual é o `.brM3`.
+
+## Origem
+
+A base foi clonada do projeto [TDP_Avaliacao_banco_de_dados](https://github.com/alexander-stack1/TDP_Avaliacao_banco_de_dados). Esta versão é uma revisão local; os arquivos do repositório de origem podem divergir dela. Não foram realizados commit, push ou envio ao Classroom.

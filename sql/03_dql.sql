@@ -4,6 +4,7 @@
 -- =====================================================================
 
 SET search_path TO bolsa, public;
+SET TIME ZONE 'America/Sao_Paulo';
 
 -- ---------------------------------------------------------------------
 -- Q01. Carteira atual de cada investidor, valorizada a mercado
@@ -15,24 +16,29 @@ SELECT investidor, tipo_investidor, ticker, quantidade, preco_medio,
  ORDER BY investidor, ticker;
 
 -- ---------------------------------------------------------------------
--- Q02. Patrimônio total em ações por investidor (agregação sobre a view).
+-- Q02. Patrimônio total em ações por investidor, incluindo posições zeradas.
+--      Sem cotação, o total é desconhecido; sem posição, o total é zero.
 -- ---------------------------------------------------------------------
-SELECT investidor,
-       tipo_investidor,
-       COUNT(*)                     AS qtd_papeis,
-       SUM(custo_total)             AS custo_total,
-       SUM(valor_mercado)           AS valor_mercado,
-       SUM(resultado_nao_realizado) AS resultado_nao_realizado
-  FROM bolsa.vw_posicao_valorizada
- GROUP BY investidor, tipo_investidor
- ORDER BY valor_mercado DESC;
+SELECT i.id_investidor, i.nome_completo AS investidor,
+       i.tipo_investidor,
+       COUNT(v.ticker) AS qtd_papeis,
+       COALESCE(SUM(v.custo_total), 0) AS custo_total,
+       CASE WHEN COUNT(v.ticker) = COUNT(v.cotacao_atual)
+            THEN COALESCE(SUM(v.valor_mercado), 0) END AS valor_mercado,
+       CASE WHEN COUNT(v.ticker) = COUNT(v.cotacao_atual)
+            THEN COALESCE(SUM(v.resultado_nao_realizado), 0) END AS resultado_nao_realizado,
+       COUNT(v.ticker) FILTER (WHERE v.cotacao_atual IS NULL) AS papeis_sem_cotacao
+  FROM bolsa.investidor i
+  LEFT JOIN bolsa.vw_posicao_valorizada v ON v.id_investidor = i.id_investidor
+ GROUP BY i.id_investidor, i.nome_completo, i.tipo_investidor
+ ORDER BY valor_mercado DESC NULLS LAST;
 
 -- ---------------------------------------------------------------------
 -- Q03. Extrato de negociações de um investidor (busca pela chave natural).
 -- ---------------------------------------------------------------------
 SELECT data_hora, ticker, empresa, tipo_operacao, quantidade, valor_unitario, valor_total
   FROM bolsa.vw_extrato_negociacoes
- WHERE documento = '52998224725'
+ WHERE documento = '00000000001'
  ORDER BY data_hora;
 
 -- ---------------------------------------------------------------------
@@ -63,8 +69,8 @@ WITH intradiario AS (
       FROM bolsa.cotacao c
       JOIN bolsa.acao a ON a.id_acao = c.id_acao
      WHERE a.ticker = 'PETR4'
-       AND c.data_hora >= timestamptz '2026-09-01 00:00-03'
-       AND c.data_hora <  timestamptz '2026-09-06 00:00-03'
+       AND c.data_hora >= timestamptz '2026-08-31 00:00-03'
+       AND c.data_hora <  timestamptz '2026-09-05 00:00-03'
 )
 SELECT pregao,
        MIN(abertura)    AS abertura,
@@ -89,7 +95,7 @@ SELECT a.ticker,
   FROM bolsa.cotacao c
   JOIN bolsa.acao a ON a.id_acao = c.id_acao
  WHERE a.ticker = 'VALE3'
-   AND c.data_hora::date = date '2026-09-03'
+   AND c.data_hora::date = date '2026-09-02'
 WINDOW w AS (PARTITION BY c.id_acao ORDER BY c.data_hora)
  ORDER BY c.data_hora;
 
@@ -98,25 +104,25 @@ WINDOW w AS (PARTITION BY c.id_acao ORDER BY c.data_hora)
 -- ---------------------------------------------------------------------
 SELECT a.ticker,
        MIN(c.valor)                                            AS minima,
-       (ARRAY_AGG(c.data_hora ORDER BY c.valor ASC))[1]        AS instante_minima,
+       (ARRAY_AGG(c.data_hora ORDER BY c.valor ASC, c.data_hora ASC))[1]        AS instante_minima,
        MAX(c.valor)                                            AS maxima,
-       (ARRAY_AGG(c.data_hora ORDER BY c.valor DESC))[1]       AS instante_maxima,
+       (ARRAY_AGG(c.data_hora ORDER BY c.valor DESC, c.data_hora ASC))[1]       AS instante_maxima,
        ROUND((MAX(c.valor) - MIN(c.valor)) / MIN(c.valor) * 100, 2) AS amplitude_pct
   FROM bolsa.cotacao c
   JOIN bolsa.acao a ON a.id_acao = c.id_acao
- WHERE c.data_hora >= timestamptz '2026-09-01 00:00-03'
-   AND c.data_hora <  timestamptz '2026-09-06 00:00-03'
+ WHERE c.data_hora >= timestamptz '2026-08-31 00:00-03'
+   AND c.data_hora <  timestamptz '2026-09-05 00:00-03'
  GROUP BY a.ticker
  ORDER BY amplitude_pct DESC;
 
 -- ---------------------------------------------------------------------
 -- Q08. Análise retrospectiva: como estava a carteira de um investidor
---      no fim do pregão de 03/09/2026, valorizada pela cotação daquele momento.
+--      no fim do pregão de 02/09/2026, valorizada pela cotação daquele momento.
 -- ---------------------------------------------------------------------
 SELECT *
   FROM bolsa.fn_carteira_em(
-           (SELECT id_investidor FROM bolsa.investidor WHERE documento = '52998224725'),
-           timestamptz '2026-09-03 17:00-03'
+           (SELECT id_investidor FROM bolsa.investidor WHERE documento = '00000000001'),
+           timestamptz '2026-09-02 17:00-03'
        );
 
 -- ---------------------------------------------------------------------
@@ -124,12 +130,14 @@ SELECT *
 --      construída com generate_series + função de análise).
 -- ---------------------------------------------------------------------
 SELECT d::date                        AS data_referencia,
-       COALESCE(SUM(k.valor_posicao), 0) AS patrimonio_em_acoes
-  FROM generate_series(timestamptz '2026-09-01 17:00-03',
-                       timestamptz '2026-09-05 17:00-03',
+       CASE WHEN COUNT(k.ticker) = COUNT(k.cotacao_na_data)
+            THEN COALESCE(SUM(k.valor_posicao), 0) END AS patrimonio_em_acoes,
+       COUNT(k.ticker) FILTER (WHERE k.cotacao_na_data IS NULL) AS papeis_sem_cotacao
+  FROM generate_series(timestamptz '2026-08-31 17:00-03',
+                       timestamptz '2026-09-04 17:00-03',
                        interval '1 day') AS d
   LEFT JOIN LATERAL bolsa.fn_carteira_em(
-           (SELECT id_investidor FROM bolsa.investidor WHERE documento = '11222333000181'),
+           (SELECT id_investidor FROM bolsa.investidor WHERE documento = '00000000000001'),
            d
        ) AS k ON true
  GROUP BY d
@@ -139,37 +147,18 @@ SELECT d::date                        AS data_referencia,
 -- Q10. Resultado REALIZADO nas vendas (preço de venda x preço médio de compra
 --      até o momento da venda) — lucro/prejuízo efetivo por operação.
 -- ---------------------------------------------------------------------
-WITH compras_acumuladas AS (
-    SELECT n.id_negociacao,
-           n.id_investidor,
-           n.id_acao,
-           n.data_hora,
-           n.tipo_operacao,
-           n.quantidade,
-           n.valor_unitario,
-           SUM(n.quantidade * n.valor_unitario)
-               FILTER (WHERE n.tipo_operacao = 'COMPRA')
-               OVER (PARTITION BY n.id_investidor, n.id_acao ORDER BY n.data_hora
-                     ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS custo_acum,
-           SUM(n.quantidade)
-               FILTER (WHERE n.tipo_operacao = 'COMPRA')
-               OVER (PARTITION BY n.id_investidor, n.id_acao ORDER BY n.data_hora
-                     ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS qtd_comprada_acum
-      FROM bolsa.negociacao n
-)
 SELECT i.nome_completo AS investidor,
        a.ticker,
-       c.data_hora     AS data_venda,
-       c.quantidade,
-       c.valor_unitario                                       AS preco_venda,
-       ROUND(c.custo_acum / c.qtd_comprada_acum, 4)           AS preco_medio_compra,
-       ROUND(c.quantidade * (c.valor_unitario - c.custo_acum / c.qtd_comprada_acum), 2)
-                                                              AS resultado_realizado
-  FROM compras_acumuladas c
-  JOIN bolsa.investidor i ON i.id_investidor = c.id_investidor
-  JOIN bolsa.acao a       ON a.id_acao       = c.id_acao
- WHERE c.tipo_operacao = 'VENDA'
- ORDER BY c.data_hora;
+       e.data_hora AS data_venda,
+       e.quantidade,
+       e.valor_unitario AS preco_venda,
+       e.preco_medio_anterior AS preco_medio_compra,
+       e.resultado_realizado
+  FROM bolsa.vw_evolucao_carteira e
+  JOIN bolsa.investidor i ON i.id_investidor = e.id_investidor
+  JOIN bolsa.acao a ON a.id_acao = e.id_acao
+ WHERE e.tipo_operacao = 'VENDA'
+ ORDER BY e.data_hora, e.id_negociacao;
 
 -- ---------------------------------------------------------------------
 -- Q11. Ranking de investidores por volume negociado (função de janela RANK).
@@ -189,11 +178,14 @@ SELECT RANK() OVER (ORDER BY SUM(n.valor_total) DESC) AS posicao,
 --      a valor de mercado e participação percentual.
 -- ---------------------------------------------------------------------
 SELECT setor,
-       SUM(valor_mercado)                                                  AS exposicao,
-       ROUND(SUM(valor_mercado) * 100.0 / SUM(SUM(valor_mercado)) OVER (), 2) AS participacao_pct
+       CASE WHEN COUNT(*) = COUNT(cotacao_atual) THEN SUM(valor_mercado) END AS exposicao,
+       CASE WHEN SUM(COUNT(*) - COUNT(cotacao_atual)) OVER () = 0
+            THEN ROUND(SUM(valor_mercado) * 100.0 / NULLIF(SUM(SUM(valor_mercado)) OVER (), 0), 2)
+       END AS participacao_pct,
+       COUNT(*) FILTER (WHERE cotacao_atual IS NULL) AS papeis_sem_cotacao
   FROM bolsa.vw_posicao_valorizada
  GROUP BY setor
- ORDER BY exposicao DESC;
+ ORDER BY exposicao DESC NULLS LAST;
 
 -- ---------------------------------------------------------------------
 -- Q13. Ações listadas que NÃO tiveram nenhuma negociação (anti-join com NOT EXISTS).
@@ -222,7 +214,8 @@ SELECT i.tipo_investidor,
 -- Q15. Conferência de integridade: a carteira mantida pelo trigger deve
 --      bater com o saldo recalculado a partir das negociações (deve retornar 0 linhas).
 -- ---------------------------------------------------------------------
-SELECT ca.id_investidor, ca.id_acao, ca.quantidade AS qtd_carteira, r.qtd_recalculada
+SELECT COALESCE(ca.id_investidor, r.id_investidor) AS id_investidor,
+       COALESCE(ca.id_acao, r.id_acao) AS id_acao, ca.quantidade AS qtd_carteira, r.qtd_recalculada
   FROM bolsa.carteira ca
   FULL OUTER JOIN (
         SELECT id_investidor, id_acao,
@@ -234,11 +227,11 @@ SELECT ca.id_investidor, ca.id_acao, ca.quantidade AS qtd_carteira, r.qtd_recalc
 
 -- ---------------------------------------------------------------------
 -- Q16. Plano de execução de uma consulta de série temporal — evidência de
---      uso do índice (id_acao, data_hora) definido pela restrição UNIQUE.
+--      plano escolhido pelo otimizador para (id_acao, data_hora) definido pela restrição UNIQUE.
 -- ---------------------------------------------------------------------
 EXPLAIN (COSTS OFF)
 SELECT data_hora, valor
   FROM bolsa.cotacao
- WHERE id_acao = 2
-   AND data_hora BETWEEN timestamptz '2026-09-02 00:00-03' AND timestamptz '2026-09-03 00:00-03'
+ WHERE id_acao = (SELECT id_acao FROM bolsa.acao WHERE ticker = 'PETR4')
+   AND data_hora BETWEEN timestamptz '2026-09-01 00:00-03' AND timestamptz '2026-09-02 00:00-03'
  ORDER BY data_hora;

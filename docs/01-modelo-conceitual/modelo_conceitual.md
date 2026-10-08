@@ -33,8 +33,8 @@ Os três arquivos são gerados por `python3 scripts/gerar_brmodelo.py` (XML) e `
 
 | Relacionamento | Entidades | Cardinalidade (mín,máx) | Atributos |
 |---|---|---|---|
-| **emite** | EMPRESA — AÇÃO | EMPRESA (1,n) · AÇÃO (1,1) | — |
-| **possui** *(identificador)* | AÇÃO — COTAÇÃO | AÇÃO (1,n) · COTAÇÃO (1,1) | — |
+| **emite** | EMPRESA — AÇÃO | EMPRESA (0,n) · AÇÃO (1,1) | — |
+| **possui** *(identificador)* | AÇÃO — COTAÇÃO | AÇÃO (0,n) · COTAÇÃO (1,1) | — |
 | **realiza** | INVESTIDOR — NEGOCIAÇÃO | INVESTIDOR (0,n) · NEGOCIAÇÃO (1,1) | — |
 | **refere-se a** | AÇÃO — NEGOCIAÇÃO | AÇÃO (0,n) · NEGOCIAÇÃO (1,1) | — |
 | **mantém (carteira)** | INVESTIDOR — AÇÃO | INVESTIDOR (0,n) · AÇÃO (0,n) | quantidade, preco_medio |
@@ -43,9 +43,15 @@ Os três arquivos são gerados por `python3 scripts/gerar_brmodelo.py` (XML) e `
 
 1. **Negociação é entidade, não relacionamento N:N.** O enunciado diz que "um mesmo investidor pode negociar várias ações ao longo do tempo": o mesmo par (investidor, ação) ocorre muitas vezes, com data/hora, tipo, quantidade e preço próprios. Um relacionamento N:N admitiria só uma ocorrência por par. Por isso NEGOCIAÇÃO é entidade ligada a INVESTIDOR (*realiza*) e a AÇÃO (*refere-se a*), ambos 1:N.
 2. **Carteira é o relacionamento N:N "mantém", com atributos.** A posição atual é única por par (investidor, ação), exatamente o que um relacionamento com atributos representa. Ela é *derivada* das negociações (regra de negócio implementada por trigger no modelo físico).
-3. **Cotação é entidade fraca de Ação.** Não existe cotação sem ação e sua identificação é (ação, data_hora). O relacionamento *possui* é identificador (losango duplo).
+3. **Cotação é entidade fraca de Ação.** Não existe cotação sem ação e sua identificação é (ação, data_hora). O relacionamento *possui* é identificador: o Chen anotado usa losango duplo e o brModelo usa a ligação de dependência (linha reforçada).
 4. **Empresa separada de Ação.** O enunciado fala em "ação pertence a uma empresa" e a mesma companhia pode ter mais de um papel (ex.: PETR3 e PETR4). Nome, setor e valor de mercado ficam na EMPRESA; o ticker fica na AÇÃO.
 5. **Investidor identificado por CPF ou CNPJ.** Um único atributo `documento` guarda o CPF (PF) ou o CNPJ (PJ), qualificado por `tipo_investidor`. No físico isso vira UNIQUE + CHECK (11 ou 14 dígitos conforme o tipo).
+
+6. **Cadastro antes do histórico.** Empresa pode ser cadastrada antes dos papéis e ação antes da primeira cotação; por isso a participação mínima dessas duas origens é zero. Toda ação tem exatamente uma empresa e toda cotação tem exatamente uma ação.
+7. **Campos exigidos.** Documento, tipo, nome, e-mail e telefone do investidor são obrigatórios. CPF/CNPJ são identificadores naturais únicos; os IDs são identificadores técnicos.
+8. **Premissas adicionais, não exigências literais do PDF.** Sem venda descoberta, negociações imutáveis e operações em instantes estritamente crescentes por par investidor/ação. Operações retroativas e com instante repetido no mesmo par são rejeitadas. O preço médio é uma extensão didática, arredondada a quatro casas a cada compra; não há taxas, tributos ou eventos societários.
+9. **Limites.** CPF/CNPJ são verificados apenas quanto a formato e comprimento, sem dígitos verificadores. Ticker e telefone seguem formatos simplificados para o case.
+
 
 ## Como abrir e editar no brModelo
 

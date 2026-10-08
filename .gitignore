@@ -35,3 +35,9 @@ venv/
 *.tmp
 tmp/
 scratch/
+
+# Metadados pessoais locais para a capa
+docs/metadados.local.json
+
+# Pacote local de entrega regenerável
+output/

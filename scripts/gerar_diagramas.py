@@ -47,7 +47,7 @@ def losango(ax, x, y, nome, w=13, h=7, identificador=False):
 
 
 def atributo(ax, x, y, nome, chave=False, parcial=False, w=None, h=3.0):
-    w = w or max(7.5, 0.95 * len(nome) + 2.5)
+    w = w or max(7.5, 0.95 * max(map(len, nome.splitlines())) + 2.5)
     ax.add_patch(Ellipse((x, y), w, h, fc=COR_ATR, ec=COR_BORDA, lw=1.1, zorder=3))
     txt = ax.text(x, y, nome, ha="center", va="center", fontsize=8.6, zorder=5)
     if chave or parcial:
@@ -83,8 +83,8 @@ def leque(ax, cx, cy, itens, raio_x=9.0, raio_y=6.5, ang_ini=150, ang_fim=30):
 # ----------------------------------------------------------------------------
 def conceitual(saida: Path):
     fig, ax = plt.subplots(figsize=(22, 13), dpi=150)
-    ax.set_xlim(-6, 113)
-    ax.set_ylim(-12, 66)
+    ax.set_xlim(-13, 121)
+    ax.set_ylim(-17, 68)
     ax.set_aspect("equal")
     ax.axis("off")
 
@@ -118,11 +118,11 @@ def conceitual(saida: Path):
     losango(ax, *REF, "refere-se a")
 
     # cardinalidades (min,max) — lidas do lado da entidade
-    cardinalidade(ax, 19.5, 45.6, "(1,n)")   # EMPRESA emite n ações
+    cardinalidade(ax, 19.5, 45.6, "(0,n)")   # EMPRESA emite n ações
     cardinalidade(ax, 37.5, 45.6, "(1,1)")   # AÇÃO pertence a 1 empresa
     cardinalidade(ax, 55.5, 45.6, "(0,n)")   # AÇÃO mantida por n investidores
     cardinalidade(ax, 78.5, 45.6, "(0,n)")   # INVESTIDOR mantém n ações
-    cardinalidade(ax, 47.8, 37.0, "(1,n)")   # AÇÃO possui n cotações
+    cardinalidade(ax, 47.8, 37.0, "(0,n)")   # AÇÃO possui n cotações
     cardinalidade(ax, 47.8, 17.5, "(1,1)")   # COTAÇÃO pertence a 1 ação
     cardinalidade(ax, 90.0, 37.0, "(0,n)")   # INVESTIDOR realiza n negociações
     cardinalidade(ax, 90.0, 17.5, "(1,1)")   # NEGOCIAÇÃO é de 1 investidor
@@ -143,7 +143,7 @@ def conceitual(saida: Path):
                ("email", False, (105, 52)), ("telefone", False, (105, 45))])
 
     # atributos do relacionamento mantém (carteira)
-    for nome, dx in (("quantidade", -5), ("preco_medio", 5)):
+    for nome, dx in (("quantidade", -8), ("preco_medio", 8)):
         p = (MAN[0] + dx, MAN[1] - 10)
         liga(ax, MAN, p); atributo(ax, *p, nome)
 
@@ -154,14 +154,14 @@ def conceitual(saida: Path):
 
     # atributos de NEGOCIAÇÃO
     atrs(NEG, [("id_negociacao", True, (70, 2)), ("data_hora", False, (79, -3)),
-               ("tipo_operacao", False, (89, -5)), ("quantidade", False, (99, -3)),
+               ("tipo_operacao", False, (89, -7.5)), ("quantidade", False, (99, -3)),
                ("valor_unitario", False, (108, 2))])
 
     # legenda
-    ax.text(-5, -8, "Legenda:  retângulo = entidade · retângulo duplo = entidade fraca · losango = relacionamento · "
+    ax.text(-12, -12, "Legenda:  retângulo = entidade · retângulo duplo = entidade fraca · losango = relacionamento · "
                     "losango duplo = relacionamento identificador · elipse = atributo · sublinhado = identificador · "
                     "(mín,máx) = cardinalidade", fontsize=9, color="#374151")
-    ax.text(-5, -10.5, "Regras: Negociação e Cotação são entidades (um mesmo par investidor/ação negocia várias vezes; "
+    ax.text(-12, -14.5, "Regras: Negociação e Cotação são entidades (um mesmo par investidor/ação negocia várias vezes; "
                       "o preço varia ao longo do dia). Carteira é o relacionamento 'mantém' (uma posição por par).",
             fontsize=9, color="#374151")
 
@@ -184,7 +184,7 @@ def tabela(ax, x, y, nome, colunas, w=24, lh=1.55):
         yy = y - lh - 0.4 - lh * (i + 0.7)
         ax.text(x + 0.8, yy, marca, fontsize=8.3, fontweight="bold", va="center",
                 color="#b45309" if "PK" in marca else "#1d4ed8" if marca else "#111", zorder=5)
-        ax.text(x + 4.2, yy, col, fontsize=8.8, va="center", zorder=5,
+        ax.text(x + 5.2, yy, col.split(" → ")[0], fontsize=8.8, va="center", zorder=5,
                 fontweight="bold" if "PK" in marca else "normal")
         ax.text(x + w - 0.8, yy, tipo, fontsize=7.8, va="center", ha="right", color="#4b5563", zorder=5)
     return {"l": x, "r": x + w, "t": y, "b": y - h, "cx": x + w / 2, "cy": y - h / 2}
@@ -212,9 +212,9 @@ def um(ax, p, direcao):
     """Traço perpendicular = 'exatamente um'."""
     dx, dy = direcao
     if dx:
-        ax.plot([p[0] - dx * 1.4] * 2, [p[1] - 1.1, p[1] + 1.1], color=COR_BORDA, lw=1.4, zorder=6)
+        ax.plot([p[0]] * 2, [p[1] - 1.1, p[1] + 1.1], color=COR_BORDA, lw=1.4, zorder=6)
     else:
-        ax.plot([p[0] - 1.1, p[0] + 1.1], [p[1] - dy * 1.4] * 2, color=COR_BORDA, lw=1.4, zorder=6)
+        ax.plot([p[0] - 1.1, p[0] + 1.1], [p[1]] * 2, color=COR_BORDA, lw=1.4, zorder=6)
 
 
 def logico(saida: Path):
@@ -243,10 +243,10 @@ def logico(saida: Path):
 
     cot = tabela(ax, 2, 20, "COTACAO", [
         ("PK", "id_cotacao", "bigint identity"),
-        ("FK", "id_acao → acao", "bigint"),
-        ("UQ", "data_hora", "timestamptz"),
+        ("FK,UQ*", "id_acao → acao", "bigint"),
+        ("UQ*", "data_hora", "timestamptz"),
         ("", "valor", "numeric(12,4)")], w=27)
-    ax.text(cot["cx"], cot["b"] - 1.3, "UNIQUE (id_acao, data_hora)", fontsize=8, ha="center", color="#4b5563")
+    ax.text(cot["cx"], cot["b"] - 1.3, "UQ* conjunta: (id_acao, data_hora)", fontsize=8, ha="center", color="#4b5563")
 
     car = tabela(ax, 42, 63, "CARTEIRA", [
         ("PK,FK", "id_investidor → investidor", "bigint"),
@@ -273,7 +273,7 @@ def logico(saida: Path):
         ("", "tipo_investidor", "text (PF/PJ)"),
         ("", "nome_completo", "text"),
         ("UQ", "email", "text"),
-        ("", "telefone", "text"),
+        ("", "telefone", "text NOT NULL"),
         ("", "criado_em", "timestamptz")], w=28)
 
     def rotulo(x, y, t, **kw):
@@ -282,12 +282,12 @@ def logico(saida: Path):
 
     # EMPRESA 1 —< N ACAO (vertical)
     x = emp["cx"]
-    liga(ax, (x, emp["b"]), (x, aca["t"])); um(ax, (x, emp["b"] - 1.4), (0, -1)); pe_de_galinha(ax, (x, aca["t"]), (0, -1))
+    liga(ax, (x, emp["b"]), (x, aca["t"])); um(ax, (x, emp["b"] - 1.4), (0, -1)); pe_de_galinha(ax, (x, aca["t"]), (0, -1), opcional=True)
     rotulo(x + 1.5, (emp["b"] + aca["t"]) / 2, "emite", va="center")
 
     # ACAO 1 —< N COTACAO (vertical)
     x = aca["cx"]
-    liga(ax, (x, aca["b"]), (x, cot["t"])); um(ax, (x, aca["b"] - 1.4), (0, -1)); pe_de_galinha(ax, (x, cot["t"]), (0, -1))
+    liga(ax, (x, aca["b"]), (x, cot["t"])); um(ax, (x, aca["b"] - 1.4), (0, -1)); pe_de_galinha(ax, (x, cot["t"]), (0, -1), opcional=True)
     rotulo(x + 1.5, (aca["b"] + cot["t"]) / 2, "possui (série temporal)", va="center")
 
     # ACAO 1 —< N CARTEIRA  (sai pela direita, sobe, entra pela esquerda)
@@ -318,8 +318,8 @@ def logico(saida: Path):
     ax.text(1, 1.5, "Legenda:  PK = chave primária · FK = chave estrangeira · UQ = única (chave natural) · "
                     "—|  = exatamente um · —<  = muitos · ○—<  = zero ou muitos",
             fontsize=9.5, color="#374151")
-    ax.text(1, -1.0, "Normalização: 3FN. Investidor x Ação é N:N e foi resolvido por duas tabelas: NEGOCIACAO (histórico, "
-                     "muitas linhas por par) e CARTEIRA (posição atual, uma linha por par).",
+    ax.text(1, -1.0, "Base normalizada; valor_total e CARTEIRA são derivados materializados. NEGOCIACAO guarda o histórico ("
+                     "muitas linhas por par investidor/ação).",
             fontsize=9.5, color="#374151")
 
     fig.savefig(saida, bbox_inches="tight", facecolor="white")

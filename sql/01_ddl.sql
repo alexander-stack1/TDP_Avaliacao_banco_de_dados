@@ -16,11 +16,13 @@
 --    * Prefixos: pk_, fk_, uq_, ck_, ix_, trg_, fn_, vw_.
 -- =====================================================================
 
-DROP SCHEMA IF EXISTS bolsa CASCADE;
+-- Instalação em esquema novo. Nunca apaga uma instalação existente.
+BEGIN;
 CREATE SCHEMA bolsa;
 COMMENT ON SCHEMA bolsa IS 'Corretora: investidores, ações, negociações, cotações e carteira.';
 
 SET search_path TO bolsa, public;
+SET TIME ZONE 'America/Sao_Paulo';
 
 -- ---------------------------------------------------------------------
 -- 1. INVESTIDOR
@@ -32,7 +34,7 @@ CREATE TABLE bolsa.investidor (
     tipo_investidor  text        NOT NULL,   -- 'PF' | 'PJ'
     nome_completo    text        NOT NULL,
     email            text        NOT NULL,
-    telefone         text,
+    telefone         text        NOT NULL,
     criado_em        timestamptz NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_investidor            PRIMARY KEY (id_investidor),
@@ -44,7 +46,8 @@ CREATE TABLE bolsa.investidor (
         OR (tipo_investidor = 'PJ' AND documento ~ '^[0-9]{14}$')
     ),
     CONSTRAINT ck_investidor_email      CHECK (email ~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'),
-    CONSTRAINT ck_investidor_telefone   CHECK (telefone IS NULL OR telefone ~ '^[0-9]{10,11}$')
+    CONSTRAINT ck_investidor_telefone   CHECK (telefone ~ '^[0-9]{10,11}$'),
+    CONSTRAINT ck_investidor_nome       CHECK (btrim(nome_completo) <> '')
 );
 
 COMMENT ON TABLE  bolsa.investidor                 IS 'Cliente da corretora (pessoa física ou jurídica).';
@@ -65,7 +68,9 @@ CREATE TABLE bolsa.empresa (
     CONSTRAINT pk_empresa               PRIMARY KEY (id_empresa),
     CONSTRAINT uq_empresa_cnpj          UNIQUE (cnpj),
     CONSTRAINT ck_empresa_cnpj          CHECK (cnpj ~ '^[0-9]{14}$'),
-    CONSTRAINT ck_empresa_valor_mercado CHECK (valor_mercado >= 0)
+    CONSTRAINT ck_empresa_valor_mercado CHECK (valor_mercado >= 0 AND valor_mercado <> 'NaN'::numeric),
+    CONSTRAINT ck_empresa_nome          CHECK (btrim(nome) <> ''),
+    CONSTRAINT ck_empresa_setor         CHECK (btrim(setor) <> '')
 );
 
 COMMENT ON TABLE  bolsa.empresa               IS 'Companhia aberta emissora de ações.';
@@ -110,8 +115,9 @@ CREATE TABLE bolsa.cotacao (
     CONSTRAINT uq_cotacao_acao_hora  UNIQUE (id_acao, data_hora),  -- também serve de índice p/ (ação, período)
     CONSTRAINT fk_cotacao_acao       FOREIGN KEY (id_acao)
         REFERENCES bolsa.acao (id_acao)
-        ON UPDATE CASCADE ON DELETE CASCADE,
-    CONSTRAINT ck_cotacao_valor      CHECK (valor > 0)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT ck_cotacao_valor      CHECK (valor > 0 AND valor <> 'NaN'::numeric),
+    CONSTRAINT ck_cotacao_data       CHECK (isfinite(data_hora))
 );
 
 -- BRIN: índice compacto para varreduras por intervalo de tempo em série temporal
@@ -143,7 +149,8 @@ CREATE TABLE bolsa.negociacao (
         ON UPDATE CASCADE ON DELETE RESTRICT,
     CONSTRAINT ck_negociacao_tipo        CHECK (tipo_operacao IN ('COMPRA', 'VENDA')),
     CONSTRAINT ck_negociacao_quantidade  CHECK (quantidade > 0),
-    CONSTRAINT ck_negociacao_valor       CHECK (valor_unitario > 0)
+    CONSTRAINT ck_negociacao_valor       CHECK (valor_unitario > 0 AND valor_unitario <> 'NaN'::numeric),
+    CONSTRAINT ck_negociacao_data        CHECK (isfinite(data_hora))
 );
 
 -- Índices compostos: igualdade primeiro, intervalo depois (extrato por investidor / por ação).
@@ -162,7 +169,7 @@ CREATE TABLE bolsa.carteira (
     id_acao        bigint        NOT NULL,
     quantidade     integer       NOT NULL DEFAULT 0,
     preco_medio    numeric(12,4) NOT NULL DEFAULT 0,   -- custo médio de aquisição
-    atualizado_em  timestamptz   NOT NULL DEFAULT now(),
+    atualizado_em  timestamptz   NOT NULL,
 
     CONSTRAINT pk_carteira            PRIMARY KEY (id_investidor, id_acao),
     CONSTRAINT fk_carteira_investidor FOREIGN KEY (id_investidor)
@@ -172,13 +179,14 @@ CREATE TABLE bolsa.carteira (
         REFERENCES bolsa.acao (id_acao)
         ON UPDATE CASCADE ON DELETE RESTRICT,
     CONSTRAINT ck_carteira_quantidade CHECK (quantidade >= 0),
-    CONSTRAINT ck_carteira_preco      CHECK (preco_medio >= 0)
+    CONSTRAINT ck_carteira_preco      CHECK (preco_medio >= 0 AND preco_medio <> 'NaN'::numeric)
 );
 
 CREATE INDEX ix_carteira_acao ON bolsa.carteira (id_acao);
 
 COMMENT ON TABLE  bolsa.carteira             IS 'Posição atual (quantidade e preço médio) por investidor e ação.';
 COMMENT ON COLUMN bolsa.carteira.preco_medio IS 'Preço médio ponderado das compras; zera quando a posição é liquidada.';
+COMMENT ON COLUMN bolsa.carteira.atualizado_em IS 'Data/hora da última negociação aplicada à posição.';
 
 -- =====================================================================
 -- 7. FUNÇÕES E TRIGGERS
@@ -194,19 +202,28 @@ AS $$
 DECLARE
     v_qtd  integer;
     v_pm   numeric(12,4);
+    v_ultima timestamptz;
 BEGIN
     -- garante a linha da posição (UPSERT idempotente)
-    INSERT INTO bolsa.carteira (id_investidor, id_acao)
-    VALUES (NEW.id_investidor, NEW.id_acao)
+    INSERT INTO bolsa.carteira (id_investidor, id_acao, atualizado_em)
+    VALUES (NEW.id_investidor, NEW.id_acao, '-infinity')
     ON CONFLICT (id_investidor, id_acao) DO NOTHING;
 
     -- trava a linha para evitar condição de corrida entre negociações concorrentes
-    SELECT quantidade, preco_medio
-      INTO v_qtd, v_pm
+    SELECT quantidade, preco_medio, atualizado_em
+      INTO v_qtd, v_pm, v_ultima
       FROM bolsa.carteira
      WHERE id_investidor = NEW.id_investidor
        AND id_acao       = NEW.id_acao
        FOR UPDATE;
+
+    -- Premissa do case: cada par investidor/ação chega em ordem temporal
+    -- estritamente crescente. Rejeitar atrasados evita saldo histórico negativo
+    -- e preço médio calculado em uma ordem diferente da usada nas consultas.
+    IF NEW.data_hora <= v_ultima THEN
+        RAISE EXCEPTION 'Negociação deve ser posterior à última operação da posição (%)', v_ultima
+            USING ERRCODE = 'check_violation';
+    END IF;
 
     IF NEW.tipo_operacao = 'COMPRA' THEN
         v_pm  := ((v_qtd * v_pm) + (NEW.quantidade * NEW.valor_unitario))
@@ -228,7 +245,7 @@ BEGIN
     UPDATE bolsa.carteira
        SET quantidade    = v_qtd,
            preco_medio   = v_pm,
-           atualizado_em = now()
+           atualizado_em = NEW.data_hora
      WHERE id_investidor = NEW.id_investidor
        AND id_acao       = NEW.id_acao;
 
@@ -247,7 +264,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
     RAISE EXCEPTION
-        'Negociação é imutável (operação % bloqueada). Registre uma operação inversa.',
+        'Negociação é imutável (operação % bloqueada). Correções exigem fluxo de estorno fora deste case.',
         TG_OP
         USING ERRCODE = 'restrict_violation';
 END;
@@ -256,6 +273,31 @@ $$;
 CREATE TRIGGER trg_negociacao_imutavel
 BEFORE UPDATE OR DELETE ON bolsa.negociacao
 FOR EACH ROW EXECUTE FUNCTION bolsa.fn_negociacao_imutavel();
+
+CREATE TRIGGER trg_negociacao_nao_truncar
+BEFORE TRUNCATE ON bolsa.negociacao
+FOR EACH STATEMENT EXECUTE FUNCTION bolsa.fn_negociacao_imutavel();
+
+-- Carteira é derivada: somente o trigger de negociação altera suas linhas.
+-- Administradores capazes de desabilitar triggers continuam sendo privilegiados.
+CREATE FUNCTION bolsa.fn_proteger_carteira()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'TRUNCATE' OR pg_trigger_depth() = 1 THEN
+        RAISE EXCEPTION 'Carteira é derivada das negociações; operação direta % bloqueada', TG_OP
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_carteira_derivada
+BEFORE INSERT OR UPDATE OR DELETE ON bolsa.carteira
+FOR EACH ROW EXECUTE FUNCTION bolsa.fn_proteger_carteira();
+CREATE TRIGGER trg_carteira_nao_truncar
+BEFORE TRUNCATE ON bolsa.carteira
+FOR EACH STATEMENT EXECUTE FUNCTION bolsa.fn_proteger_carteira();
 
 -- 7.3 Análise retrospectiva: reconstrói a carteira de um investidor em um
 --     instante passado e a valoriza pela última cotação conhecida até ali.
@@ -360,17 +402,44 @@ SELECT n.id_negociacao,
   JOIN bolsa.acao a       ON a.id_acao       = n.id_acao
   JOIN bolsa.empresa e    ON e.id_empresa    = a.id_empresa;
 
--- =====================================================================
--- 9. SEGURANÇA — papel de leitura para analistas (princípio do menor privilégio)
--- =====================================================================
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bolsa_leitura') THEN
-        CREATE ROLE bolsa_leitura NOLOGIN;
-    END IF;
-END;
-$$;
+-- 8.4 Reconstitui o custo médio móvel após cada operação.
+-- A venda retira custo da posição; uma liquidação zera a base para a recompra.
+-- Arredondamento a 4 casas em cada compra, igual ao trigger da carteira.
+CREATE VIEW bolsa.vw_evolucao_carteira AS
+WITH RECURSIVE ordenadas AS (
+    SELECT n.*,
+           ROW_NUMBER() OVER (PARTITION BY id_investidor, id_acao
+                              ORDER BY data_hora, id_negociacao) AS ordem
+      FROM bolsa.negociacao n
+), evolucao AS (
+    SELECT n.*, n.quantidade::bigint AS saldo,
+           n.valor_unitario::numeric(12,4) AS preco_medio,
+           0::numeric(12,4) AS preco_medio_anterior
+      FROM ordenadas n
+     WHERE ordem = 1
+    UNION ALL
+    SELECT n.*,
+           e.saldo + CASE WHEN n.tipo_operacao = 'COMPRA' THEN n.quantidade ELSE -n.quantidade END,
+           (CASE WHEN n.tipo_operacao = 'COMPRA'
+                 THEN (e.saldo * e.preco_medio + n.quantidade * n.valor_unitario)
+                      / (e.saldo + n.quantidade)
+                 WHEN e.saldo = n.quantidade THEN 0
+                 ELSE e.preco_medio END)::numeric(12,4),
+           e.preco_medio
+      FROM evolucao e
+      JOIN ordenadas n ON n.id_investidor = e.id_investidor
+                      AND n.id_acao = e.id_acao AND n.ordem = e.ordem + 1
+)
+SELECT id_negociacao, id_investidor, id_acao, data_hora, tipo_operacao,
+       quantidade, valor_unitario, saldo, preco_medio, preco_medio_anterior,
+       CASE WHEN tipo_operacao = 'VENDA'
+            THEN ROUND(quantidade * (valor_unitario - preco_medio_anterior), 2)
+       END AS resultado_realizado
+  FROM evolucao;
 
-GRANT USAGE ON SCHEMA bolsa TO bolsa_leitura;
-GRANT SELECT ON ALL TABLES IN SCHEMA bolsa TO bolsa_leitura;
-ALTER DEFAULT PRIVILEGES IN SCHEMA bolsa GRANT SELECT ON TABLES TO bolsa_leitura;
+COMMENT ON VIEW bolsa.vw_evolucao_carteira
+    IS 'Reconstituição sequencial de quantidade, custo médio móvel e resultado realizado, sem taxas ou tributos.';
+
+-- Permissões de analistas podem ser concedidas pelo administrador à parte.
+-- A entrega não cria papéis globais nem exige privilégio CREATEROLE.
+COMMIT;

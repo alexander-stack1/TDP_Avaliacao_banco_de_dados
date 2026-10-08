@@ -2,7 +2,8 @@
 --  CASE: NEGOCIAÇÕES NA BOLSA DE VALORES — MODELO FÍSICO (PostgreSQL 16)
 --  Arquivo único: DDL + DML + DQL (gerado por scripts/build_sql.sh a partir
 --  de sql/01_ddl.sql, sql/02_dml.sql e sql/03_dql.sql — edite os fontes).
---  Executar: psql -v ON_ERROR_STOP=1 -d <banco> -f sql/00_bolsa_completo.sql
+--  Executar em banco novo: psql -X -v ON_ERROR_STOP=1 -d <banco> -f este_arquivo.sql
+--  Recusa esquema bolsa existente. Não apaga dados nem cria papéis globais.
 -- =====================================================================
 
 -- =====================================================================
@@ -23,11 +24,13 @@
 --    * Prefixos: pk_, fk_, uq_, ck_, ix_, trg_, fn_, vw_.
 -- =====================================================================
 
-DROP SCHEMA IF EXISTS bolsa CASCADE;
+-- Instalação em esquema novo. Nunca apaga uma instalação existente.
+BEGIN;
 CREATE SCHEMA bolsa;
 COMMENT ON SCHEMA bolsa IS 'Corretora: investidores, ações, negociações, cotações e carteira.';
 
 SET search_path TO bolsa, public;
+SET TIME ZONE 'America/Sao_Paulo';
 
 -- ---------------------------------------------------------------------
 -- 1. INVESTIDOR
@@ -39,7 +42,7 @@ CREATE TABLE bolsa.investidor (
     tipo_investidor  text        NOT NULL,   -- 'PF' | 'PJ'
     nome_completo    text        NOT NULL,
     email            text        NOT NULL,
-    telefone         text,
+    telefone         text        NOT NULL,
     criado_em        timestamptz NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_investidor            PRIMARY KEY (id_investidor),
@@ -51,7 +54,8 @@ CREATE TABLE bolsa.investidor (
         OR (tipo_investidor = 'PJ' AND documento ~ '^[0-9]{14}$')
     ),
     CONSTRAINT ck_investidor_email      CHECK (email ~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'),
-    CONSTRAINT ck_investidor_telefone   CHECK (telefone IS NULL OR telefone ~ '^[0-9]{10,11}$')
+    CONSTRAINT ck_investidor_telefone   CHECK (telefone ~ '^[0-9]{10,11}$'),
+    CONSTRAINT ck_investidor_nome       CHECK (btrim(nome_completo) <> '')
 );
 
 COMMENT ON TABLE  bolsa.investidor                 IS 'Cliente da corretora (pessoa física ou jurídica).';
@@ -72,7 +76,9 @@ CREATE TABLE bolsa.empresa (
     CONSTRAINT pk_empresa               PRIMARY KEY (id_empresa),
     CONSTRAINT uq_empresa_cnpj          UNIQUE (cnpj),
     CONSTRAINT ck_empresa_cnpj          CHECK (cnpj ~ '^[0-9]{14}$'),
-    CONSTRAINT ck_empresa_valor_mercado CHECK (valor_mercado >= 0)
+    CONSTRAINT ck_empresa_valor_mercado CHECK (valor_mercado >= 0 AND valor_mercado <> 'NaN'::numeric),
+    CONSTRAINT ck_empresa_nome          CHECK (btrim(nome) <> ''),
+    CONSTRAINT ck_empresa_setor         CHECK (btrim(setor) <> '')
 );
 
 COMMENT ON TABLE  bolsa.empresa               IS 'Companhia aberta emissora de ações.';
@@ -117,8 +123,9 @@ CREATE TABLE bolsa.cotacao (
     CONSTRAINT uq_cotacao_acao_hora  UNIQUE (id_acao, data_hora),  -- também serve de índice p/ (ação, período)
     CONSTRAINT fk_cotacao_acao       FOREIGN KEY (id_acao)
         REFERENCES bolsa.acao (id_acao)
-        ON UPDATE CASCADE ON DELETE CASCADE,
-    CONSTRAINT ck_cotacao_valor      CHECK (valor > 0)
+        ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT ck_cotacao_valor      CHECK (valor > 0 AND valor <> 'NaN'::numeric),
+    CONSTRAINT ck_cotacao_data       CHECK (isfinite(data_hora))
 );
 
 -- BRIN: índice compacto para varreduras por intervalo de tempo em série temporal
@@ -150,7 +157,8 @@ CREATE TABLE bolsa.negociacao (
         ON UPDATE CASCADE ON DELETE RESTRICT,
     CONSTRAINT ck_negociacao_tipo        CHECK (tipo_operacao IN ('COMPRA', 'VENDA')),
     CONSTRAINT ck_negociacao_quantidade  CHECK (quantidade > 0),
-    CONSTRAINT ck_negociacao_valor       CHECK (valor_unitario > 0)
+    CONSTRAINT ck_negociacao_valor       CHECK (valor_unitario > 0 AND valor_unitario <> 'NaN'::numeric),
+    CONSTRAINT ck_negociacao_data        CHECK (isfinite(data_hora))
 );
 
 -- Índices compostos: igualdade primeiro, intervalo depois (extrato por investidor / por ação).
@@ -169,7 +177,7 @@ CREATE TABLE bolsa.carteira (
     id_acao        bigint        NOT NULL,
     quantidade     integer       NOT NULL DEFAULT 0,
     preco_medio    numeric(12,4) NOT NULL DEFAULT 0,   -- custo médio de aquisição
-    atualizado_em  timestamptz   NOT NULL DEFAULT now(),
+    atualizado_em  timestamptz   NOT NULL,
 
     CONSTRAINT pk_carteira            PRIMARY KEY (id_investidor, id_acao),
     CONSTRAINT fk_carteira_investidor FOREIGN KEY (id_investidor)
@@ -179,13 +187,14 @@ CREATE TABLE bolsa.carteira (
         REFERENCES bolsa.acao (id_acao)
         ON UPDATE CASCADE ON DELETE RESTRICT,
     CONSTRAINT ck_carteira_quantidade CHECK (quantidade >= 0),
-    CONSTRAINT ck_carteira_preco      CHECK (preco_medio >= 0)
+    CONSTRAINT ck_carteira_preco      CHECK (preco_medio >= 0 AND preco_medio <> 'NaN'::numeric)
 );
 
 CREATE INDEX ix_carteira_acao ON bolsa.carteira (id_acao);
 
 COMMENT ON TABLE  bolsa.carteira             IS 'Posição atual (quantidade e preço médio) por investidor e ação.';
 COMMENT ON COLUMN bolsa.carteira.preco_medio IS 'Preço médio ponderado das compras; zera quando a posição é liquidada.';
+COMMENT ON COLUMN bolsa.carteira.atualizado_em IS 'Data/hora da última negociação aplicada à posição.';
 
 -- =====================================================================
 -- 7. FUNÇÕES E TRIGGERS
@@ -201,19 +210,28 @@ AS $$
 DECLARE
     v_qtd  integer;
     v_pm   numeric(12,4);
+    v_ultima timestamptz;
 BEGIN
     -- garante a linha da posição (UPSERT idempotente)
-    INSERT INTO bolsa.carteira (id_investidor, id_acao)
-    VALUES (NEW.id_investidor, NEW.id_acao)
+    INSERT INTO bolsa.carteira (id_investidor, id_acao, atualizado_em)
+    VALUES (NEW.id_investidor, NEW.id_acao, '-infinity')
     ON CONFLICT (id_investidor, id_acao) DO NOTHING;
 
     -- trava a linha para evitar condição de corrida entre negociações concorrentes
-    SELECT quantidade, preco_medio
-      INTO v_qtd, v_pm
+    SELECT quantidade, preco_medio, atualizado_em
+      INTO v_qtd, v_pm, v_ultima
       FROM bolsa.carteira
      WHERE id_investidor = NEW.id_investidor
        AND id_acao       = NEW.id_acao
        FOR UPDATE;
+
+    -- Premissa do case: cada par investidor/ação chega em ordem temporal
+    -- estritamente crescente. Rejeitar atrasados evita saldo histórico negativo
+    -- e preço médio calculado em uma ordem diferente da usada nas consultas.
+    IF NEW.data_hora <= v_ultima THEN
+        RAISE EXCEPTION 'Negociação deve ser posterior à última operação da posição (%)', v_ultima
+            USING ERRCODE = 'check_violation';
+    END IF;
 
     IF NEW.tipo_operacao = 'COMPRA' THEN
         v_pm  := ((v_qtd * v_pm) + (NEW.quantidade * NEW.valor_unitario))
@@ -235,7 +253,7 @@ BEGIN
     UPDATE bolsa.carteira
        SET quantidade    = v_qtd,
            preco_medio   = v_pm,
-           atualizado_em = now()
+           atualizado_em = NEW.data_hora
      WHERE id_investidor = NEW.id_investidor
        AND id_acao       = NEW.id_acao;
 
@@ -254,7 +272,7 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
     RAISE EXCEPTION
-        'Negociação é imutável (operação % bloqueada). Registre uma operação inversa.',
+        'Negociação é imutável (operação % bloqueada). Correções exigem fluxo de estorno fora deste case.',
         TG_OP
         USING ERRCODE = 'restrict_violation';
 END;
@@ -263,6 +281,31 @@ $$;
 CREATE TRIGGER trg_negociacao_imutavel
 BEFORE UPDATE OR DELETE ON bolsa.negociacao
 FOR EACH ROW EXECUTE FUNCTION bolsa.fn_negociacao_imutavel();
+
+CREATE TRIGGER trg_negociacao_nao_truncar
+BEFORE TRUNCATE ON bolsa.negociacao
+FOR EACH STATEMENT EXECUTE FUNCTION bolsa.fn_negociacao_imutavel();
+
+-- Carteira é derivada: somente o trigger de negociação altera suas linhas.
+-- Administradores capazes de desabilitar triggers continuam sendo privilegiados.
+CREATE FUNCTION bolsa.fn_proteger_carteira()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'TRUNCATE' OR pg_trigger_depth() = 1 THEN
+        RAISE EXCEPTION 'Carteira é derivada das negociações; operação direta % bloqueada', TG_OP
+            USING ERRCODE = 'restrict_violation';
+    END IF;
+    IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_carteira_derivada
+BEFORE INSERT OR UPDATE OR DELETE ON bolsa.carteira
+FOR EACH ROW EXECUTE FUNCTION bolsa.fn_proteger_carteira();
+CREATE TRIGGER trg_carteira_nao_truncar
+BEFORE TRUNCATE ON bolsa.carteira
+FOR EACH STATEMENT EXECUTE FUNCTION bolsa.fn_proteger_carteira();
 
 -- 7.3 Análise retrospectiva: reconstrói a carteira de um investidor em um
 --     instante passado e a valoriza pela última cotação conhecida até ali.
@@ -367,29 +410,59 @@ SELECT n.id_negociacao,
   JOIN bolsa.acao a       ON a.id_acao       = n.id_acao
   JOIN bolsa.empresa e    ON e.id_empresa    = a.id_empresa;
 
--- =====================================================================
--- 9. SEGURANÇA — papel de leitura para analistas (princípio do menor privilégio)
--- =====================================================================
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'bolsa_leitura') THEN
-        CREATE ROLE bolsa_leitura NOLOGIN;
-    END IF;
-END;
-$$;
+-- 8.4 Reconstitui o custo médio móvel após cada operação.
+-- A venda retira custo da posição; uma liquidação zera a base para a recompra.
+-- Arredondamento a 4 casas em cada compra, igual ao trigger da carteira.
+CREATE VIEW bolsa.vw_evolucao_carteira AS
+WITH RECURSIVE ordenadas AS (
+    SELECT n.*,
+           ROW_NUMBER() OVER (PARTITION BY id_investidor, id_acao
+                              ORDER BY data_hora, id_negociacao) AS ordem
+      FROM bolsa.negociacao n
+), evolucao AS (
+    SELECT n.*, n.quantidade::bigint AS saldo,
+           n.valor_unitario::numeric(12,4) AS preco_medio,
+           0::numeric(12,4) AS preco_medio_anterior
+      FROM ordenadas n
+     WHERE ordem = 1
+    UNION ALL
+    SELECT n.*,
+           e.saldo + CASE WHEN n.tipo_operacao = 'COMPRA' THEN n.quantidade ELSE -n.quantidade END,
+           (CASE WHEN n.tipo_operacao = 'COMPRA'
+                 THEN (e.saldo * e.preco_medio + n.quantidade * n.valor_unitario)
+                      / (e.saldo + n.quantidade)
+                 WHEN e.saldo = n.quantidade THEN 0
+                 ELSE e.preco_medio END)::numeric(12,4),
+           e.preco_medio
+      FROM evolucao e
+      JOIN ordenadas n ON n.id_investidor = e.id_investidor
+                      AND n.id_acao = e.id_acao AND n.ordem = e.ordem + 1
+)
+SELECT id_negociacao, id_investidor, id_acao, data_hora, tipo_operacao,
+       quantidade, valor_unitario, saldo, preco_medio, preco_medio_anterior,
+       CASE WHEN tipo_operacao = 'VENDA'
+            THEN ROUND(quantidade * (valor_unitario - preco_medio_anterior), 2)
+       END AS resultado_realizado
+  FROM evolucao;
 
-GRANT USAGE ON SCHEMA bolsa TO bolsa_leitura;
-GRANT SELECT ON ALL TABLES IN SCHEMA bolsa TO bolsa_leitura;
-ALTER DEFAULT PRIVILEGES IN SCHEMA bolsa GRANT SELECT ON TABLES TO bolsa_leitura;
+COMMENT ON VIEW bolsa.vw_evolucao_carteira
+    IS 'Reconstituição sequencial de quantidade, custo médio móvel e resultado realizado, sem taxas ou tributos.';
+
+-- Permissões de analistas podem ser concedidas pelo administrador à parte.
+-- A entrega não cria papéis globais nem exige privilégio CREATEROLE.
+COMMIT;
 
 
 -- =====================================================================
 --  CASE: NEGOCIAÇÕES NA BOLSA DE VALORES
 --  Modelo Físico — DML (Data Manipulation Language): carga de exemplo
---  Todos os dados abaixo são fictícios (CPF/CNPJ/e-mails inventados).
+--  Dados sintéticos: documentos sem validação de dígitos verificadores,
+--  nomes genéricos e e-mails no domínio reservado example.invalid.
+--  Tickers são rótulos ilustrativos; preços e empresas não são dados de mercado.
 -- =====================================================================
 
 SET search_path TO bolsa, public;
+SET TIME ZONE 'America/Sao_Paulo';
 
 BEGIN;
 
@@ -397,41 +470,41 @@ BEGIN;
 -- 1. INVESTIDORES (4 PF + 2 PJ)
 -- ---------------------------------------------------------------------
 INSERT INTO bolsa.investidor (documento, tipo_investidor, nome_completo, email, telefone) VALUES
-    ('52998224725',     'PF', 'Ana Paula Ribeiro',          'ana.ribeiro@exemplo.com',      '11987650001'),
-    ('11144477735',     'PF', 'Bruno Carvalho Lima',        'bruno.lima@exemplo.com',       '21987650002'),
-    ('35652325304',     'PF', 'Carla Mendes Souza',         'carla.souza@exemplo.com',      '31987650003'),
-    ('20385364008',     'PF', 'Diego Nascimento Alves',     'diego.alves@exemplo.com',      NULL),
-    ('11222333000181',  'PJ', 'Horizonte Participações S.A.','contato@horizonte.exemplo',   '1133330004'),
-    ('45678901000123',  'PJ', 'Vale Verde Investimentos Ltda','financeiro@valeverde.exemplo','4133330005');
+    ('00000000001',     'PF', 'Investidor PF 01',          'pf01@example.invalid',      '11987650001'),
+    ('00000000002',     'PF', 'Investidor PF 02',        'pf02@example.invalid',       '21987650002'),
+    ('00000000003',     'PF', 'Investidor PF 03',         'pf03@example.invalid',      '31987650003'),
+    ('00000000004',     'PF', 'Investidor PF 04',     'pf04@example.invalid',      '11900000004'),
+    ('00000000000001',  'PJ', 'Investidor PJ 01','pj01@example.invalid',   '1133330004'),
+    ('00000000000002',  'PJ', 'Investidor PJ 02','pj02@example.invalid','4133330005');
 
 -- ---------------------------------------------------------------------
 -- 2. EMPRESAS LISTADAS (7)
 -- ---------------------------------------------------------------------
 INSERT INTO bolsa.empresa (cnpj, nome, setor, valor_mercado) VALUES
-    ('33000167000101', 'Petróleo Brasileiro S.A.',  'Petróleo e Gás',      480000000000.00),
-    ('33592510000154', 'Vale S.A.',                 'Mineração',           280000000000.00),
-    ('60746948000112', 'Banco Bradesco S.A.',       'Financeiro',          150000000000.00),
-    ('60872504000123', 'Itaú Unibanco Holding S.A.','Financeiro',          320000000000.00),
-    ('47960950000121', 'Magazine Luiza S.A.',       'Varejo',               8000000000.00),
-    ('02558157000162', 'WEG S.A.',                  'Bens Industriais',    170000000000.00),
-    ('07526557000100', 'Ambev S.A.',                'Bebidas',             190000000000.00);
+    ('10000000000001', 'Empresa Didática 01',  'Petróleo e Gás',      480000000000.00),
+    ('10000000000002', 'Empresa Didática 02',                 'Mineração',           280000000000.00),
+    ('10000000000003', 'Empresa Didática 03',       'Financeiro',          150000000000.00),
+    ('10000000000004', 'Empresa Didática 04','Financeiro',          320000000000.00),
+    ('10000000000005', 'Empresa Didática 05',       'Varejo',               8000000000.00),
+    ('10000000000006', 'Empresa Didática 06',                  'Bens Industriais',    170000000000.00),
+    ('10000000000007', 'Empresa Didática 07',                'Bebidas',             190000000000.00);
 
 -- ---------------------------------------------------------------------
 -- 3. AÇÕES (8 papéis; uma empresa pode ter mais de um)
 -- ---------------------------------------------------------------------
 INSERT INTO bolsa.acao (ticker, id_empresa, tipo_acao) VALUES
-    ('PETR3', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '33000167000101'), 'ON'),
-    ('PETR4', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '33000167000101'), 'PN'),
-    ('VALE3', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '33592510000154'), 'ON'),
-    ('BBDC4', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '60746948000112'), 'PN'),
-    ('ITUB4', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '60872504000123'), 'PN'),
-    ('MGLU3', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '47960950000121'), 'ON'),
-    ('WEGE3', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '02558157000162'), 'ON'),
-    ('ABEV3', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '07526557000100'), 'ON');   -- listada, sem negociação
+    ('PETR3', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '10000000000001'), 'ON'),
+    ('PETR4', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '10000000000001'), 'PN'),
+    ('VALE3', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '10000000000002'), 'ON'),
+    ('BBDC4', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '10000000000003'), 'PN'),
+    ('ITUB4', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '10000000000004'), 'PN'),
+    ('MGLU3', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '10000000000005'), 'ON'),
+    ('WEGE3', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '10000000000006'), 'ON'),
+    ('ABEV3', (SELECT id_empresa FROM bolsa.empresa WHERE cnpj = '10000000000007'), 'ON');   -- listada, sem negociação
 
 -- ---------------------------------------------------------------------
 -- 4. HISTÓRICO DE COTAÇÕES
---    Série intradiária: 5 pregões (01 a 05/09/2026), a cada 30 min das
+--    Série intradiária: 5 dias úteis simulados (31/08 a 04/09/2026), a cada 30 min das
 --    10:00 às 17:00, para cada ação. Preço = base x oscilação determinística
 --    (função seno) para simular o comportamento do mercado.
 -- ---------------------------------------------------------------------
@@ -441,7 +514,7 @@ SELECT a.id_acao,
        ROUND(
            ( b.preco_base
              * (1 + 0.012 * sin(extract(epoch FROM t.instante) / 5400.0 + a.id_acao))
-             * (1 + 0.004 * (extract(day FROM t.instante) - 3))
+             * (1 + 0.004 * ((t.instante AT TIME ZONE 'America/Sao_Paulo')::date - date '2026-09-02'))
            )::numeric,
            4
        )
@@ -453,8 +526,8 @@ SELECT a.id_acao,
        ) AS b (ticker, preco_base) ON b.ticker = a.ticker
   CROSS JOIN LATERAL (
       SELECT d + (h * interval '30 minutes') AS instante
-        FROM generate_series(timestamptz '2026-09-01 10:00-03',
-                             timestamptz '2026-09-05 10:00-03',
+        FROM generate_series(timestamptz '2026-08-31 10:00-03',
+                             timestamptz '2026-09-04 10:00-03',
                              interval '1 day') AS d
         CROSS JOIN generate_series(0, 14) AS h   -- 10:00 .. 17:00, de 30 em 30 min
   ) AS t;
@@ -476,21 +549,27 @@ INSERT INTO bolsa.negociacao (id_investidor, id_acao, data_hora, tipo_operacao, 
 SELECT i.id_investidor, a.id_acao, n.data_hora, n.tipo_operacao, n.quantidade, n.valor_unitario
   FROM (VALUES
         -- documento         ticker   data/hora                          op        qtd   preço
-        ('52998224725',     'PETR4', timestamptz '2026-09-01 10:15-03', 'COMPRA',  200,  36.70),
-        ('52998224725',     'VALE3', timestamptz '2026-09-01 11:05-03', 'COMPRA',  100,  61.10),
-        ('11144477735',     'ITUB4', timestamptz '2026-09-01 14:30-03', 'COMPRA',  300,  33.60),
-        ('35652325304',     'MGLU3', timestamptz '2026-09-02 10:40-03', 'COMPRA', 1000,   9.75),
-        ('11222333000181',  'PETR3', timestamptz '2026-09-02 11:00-03', 'COMPRA', 5000,  38.05),
-        ('11222333000181',  'WEGE3', timestamptz '2026-09-02 15:20-03', 'COMPRA', 2000,  52.10),
-        ('52998224725',     'PETR4', timestamptz '2026-09-03 10:05-03', 'COMPRA',  100,  37.10),  -- 2ª compra: novo preço médio
-        ('20385364008',     'BBDC4', timestamptz '2026-09-03 12:00-03', 'COMPRA',  500,  14.05),
-        ('45678901000123',  'VALE3', timestamptz '2026-09-03 13:45-03', 'COMPRA', 3000,  61.50),
-        ('11144477735',     'ITUB4', timestamptz '2026-09-04 10:30-03', 'VENDA',   100,  34.05),  -- venda parcial
-        ('35652325304',     'MGLU3', timestamptz '2026-09-04 11:15-03', 'VENDA',  1000,   9.90),  -- liquida a posição
-        ('52998224725',     'VALE3', timestamptz '2026-09-04 16:00-03', 'VENDA',    50,  60.80),
-        ('45678901000123',  'PETR4', timestamptz '2026-09-05 10:10-03', 'COMPRA', 4000,  36.95),
-        ('20385364008',     'MGLU3', timestamptz '2026-09-05 14:00-03', 'COMPRA', 2000,   9.60),
-        ('11222333000181',  'PETR3', timestamptz '2026-09-05 16:30-03', 'VENDA',  1500,  38.60)
+        ('00000000001',     'PETR4', timestamptz '2026-08-31 10:15-03', 'COMPRA',  200,  36.70),
+        ('00000000001',     'VALE3', timestamptz '2026-08-31 11:05-03', 'COMPRA',  100,  61.10),
+        ('00000000002',     'ITUB4', timestamptz '2026-08-31 14:30-03', 'COMPRA',  300,  33.60),
+        ('00000000003',     'MGLU3', timestamptz '2026-09-01 10:40-03', 'COMPRA', 1000,   9.75),
+        ('00000000000001',  'PETR3', timestamptz '2026-09-01 11:00-03', 'COMPRA', 5000,  38.05),
+        ('00000000000001',  'WEGE3', timestamptz '2026-09-01 15:20-03', 'COMPRA', 2000,  52.10),
+        ('00000000001',     'PETR4', timestamptz '2026-09-02 10:05-03', 'COMPRA',  100,  37.10),  -- 2ª compra: novo preço médio
+        ('00000000004',     'BBDC4', timestamptz '2026-09-02 12:00-03', 'COMPRA',  500,  14.05),
+        ('00000000000002',  'VALE3', timestamptz '2026-09-02 13:45-03', 'COMPRA', 3000,  61.50),
+        ('00000000002',     'ITUB4', timestamptz '2026-09-03 10:30-03', 'VENDA',   100,  34.05),  -- venda parcial
+        ('00000000003',     'MGLU3', timestamptz '2026-09-03 11:15-03', 'VENDA',  1000,   9.90),  -- liquida a posição
+        ('00000000001',     'VALE3', timestamptz '2026-09-03 16:00-03', 'VENDA',    50,  60.80),
+        ('00000000000002',  'PETR4', timestamptz '2026-09-04 10:10-03', 'COMPRA', 4000,  36.95),
+        ('00000000004',     'MGLU3', timestamptz '2026-09-04 14:00-03', 'COMPRA', 2000,   9.60),
+        ('00000000000001',  'PETR3', timestamptz '2026-09-04 16:30-03', 'VENDA',  1500,  38.60),
+        -- Recompra após venda parcial: a média usa somente o saldo remanescente.
+        ('00000000002', 'ITUB4', timestamptz '2026-09-03 12:00-03', 'COMPRA', 100, 40.00),
+        ('00000000002', 'ITUB4', timestamptz '2026-09-03 14:00-03', 'VENDA',   50, 42.00),
+        -- Nova posição após liquidação: o custo anterior não pode contaminar a recompra.
+        ('00000000003', 'MGLU3', timestamptz '2026-09-04 11:00-03', 'COMPRA', 100,  8.00),
+        ('00000000003', 'MGLU3', timestamptz '2026-09-04 13:00-03', 'VENDA',  100,  9.00)
        ) AS n (documento, ticker, data_hora, tipo_operacao, quantidade, valor_unitario)
   JOIN bolsa.investidor i ON i.documento = n.documento
   JOIN bolsa.acao a       ON a.ticker    = n.ticker
@@ -502,18 +581,18 @@ SELECT i.id_investidor, a.id_acao, n.data_hora, n.tipo_operacao, n.quantidade, n
 UPDATE bolsa.empresa
    SET valor_mercado = 495000000000.00,
        atualizado_em = now()
- WHERE cnpj = '33000167000101';
+ WHERE cnpj = '10000000000001';
 
 UPDATE bolsa.investidor
    SET telefone = '61987650004'
- WHERE documento = '20385364008';
+ WHERE documento = '00000000004';
 
 -- ---------------------------------------------------------------------
 -- 7. DELETE — exclusão permitida (cotação duplicada/errada de um instante)
 -- ---------------------------------------------------------------------
 DELETE FROM bolsa.cotacao
  WHERE id_acao   = (SELECT id_acao FROM bolsa.acao WHERE ticker = 'WEGE3')
-   AND data_hora = timestamptz '2026-09-05 17:00-03';
+   AND data_hora = timestamptz '2026-09-04 17:00-03';
 
 COMMIT;
 
@@ -526,10 +605,10 @@ COMMIT;
 DO $$
 BEGIN
     INSERT INTO bolsa.negociacao (id_investidor, id_acao, tipo_operacao, quantidade, valor_unitario)
-    VALUES ((SELECT id_investidor FROM bolsa.investidor WHERE documento = '52998224725'),
+    VALUES ((SELECT id_investidor FROM bolsa.investidor WHERE documento = '00000000001'),
             (SELECT id_acao FROM bolsa.acao WHERE ticker = 'PETR4'),
             'VENDA', 999999, 37.00);
-    RAISE NOTICE 'FALHA: a venda acima do saldo deveria ter sido rejeitada';
+    RAISE EXCEPTION 'FALHA: a venda acima do saldo deveria ter sido rejeitada';
 EXCEPTION WHEN check_violation THEN
     RAISE NOTICE 'OK (regra 8.1): %', SQLERRM;
 END;
@@ -539,7 +618,7 @@ $$;
 DO $$
 BEGIN
     DELETE FROM bolsa.negociacao WHERE id_negociacao = 1;
-    RAISE NOTICE 'FALHA: o DELETE de negociação deveria ter sido rejeitado';
+    RAISE EXCEPTION 'FALHA: o DELETE de negociação deveria ter sido rejeitado';
 EXCEPTION WHEN restrict_violation THEN
     RAISE NOTICE 'OK (regra 8.2): %', SQLERRM;
 END;
@@ -548,9 +627,9 @@ $$;
 -- 8.3 CPF com tamanho de CNPJ → viola CHECK
 DO $$
 BEGIN
-    INSERT INTO bolsa.investidor (documento, tipo_investidor, nome_completo, email)
-    VALUES ('12345678000199', 'PF', 'Documento Inválido', 'invalido@exemplo.com');
-    RAISE NOTICE 'FALHA: documento incompatível com o tipo deveria ter sido rejeitado';
+    INSERT INTO bolsa.investidor (documento, tipo_investidor, nome_completo, email, telefone)
+    VALUES ('12345678000199', 'PF', 'Documento Inválido', 'invalido@example.invalid', '11900000000');
+    RAISE EXCEPTION 'FALHA: documento incompatível com o tipo deveria ter sido rejeitado';
 EXCEPTION WHEN check_violation THEN
     RAISE NOTICE 'OK (regra 8.3): %', SQLERRM;
 END;
@@ -559,8 +638,8 @@ $$;
 -- 8.4 Excluir empresa que possui ações → bloqueado por FK RESTRICT
 DO $$
 BEGIN
-    DELETE FROM bolsa.empresa WHERE cnpj = '33592510000154';
-    RAISE NOTICE 'FALHA: empresa com ações não deveria ser excluída';
+    DELETE FROM bolsa.empresa WHERE cnpj = '10000000000002';
+    RAISE EXCEPTION 'FALHA: empresa com ações não deveria ser excluída';
 EXCEPTION WHEN foreign_key_violation THEN
     RAISE NOTICE 'OK (regra 8.4): %', SQLERRM;
 END;
@@ -573,6 +652,7 @@ $$;
 -- =====================================================================
 
 SET search_path TO bolsa, public;
+SET TIME ZONE 'America/Sao_Paulo';
 
 -- ---------------------------------------------------------------------
 -- Q01. Carteira atual de cada investidor, valorizada a mercado
@@ -584,24 +664,29 @@ SELECT investidor, tipo_investidor, ticker, quantidade, preco_medio,
  ORDER BY investidor, ticker;
 
 -- ---------------------------------------------------------------------
--- Q02. Patrimônio total em ações por investidor (agregação sobre a view).
+-- Q02. Patrimônio total em ações por investidor, incluindo posições zeradas.
+--      Sem cotação, o total é desconhecido; sem posição, o total é zero.
 -- ---------------------------------------------------------------------
-SELECT investidor,
-       tipo_investidor,
-       COUNT(*)                     AS qtd_papeis,
-       SUM(custo_total)             AS custo_total,
-       SUM(valor_mercado)           AS valor_mercado,
-       SUM(resultado_nao_realizado) AS resultado_nao_realizado
-  FROM bolsa.vw_posicao_valorizada
- GROUP BY investidor, tipo_investidor
- ORDER BY valor_mercado DESC;
+SELECT i.id_investidor, i.nome_completo AS investidor,
+       i.tipo_investidor,
+       COUNT(v.ticker) AS qtd_papeis,
+       COALESCE(SUM(v.custo_total), 0) AS custo_total,
+       CASE WHEN COUNT(v.ticker) = COUNT(v.cotacao_atual)
+            THEN COALESCE(SUM(v.valor_mercado), 0) END AS valor_mercado,
+       CASE WHEN COUNT(v.ticker) = COUNT(v.cotacao_atual)
+            THEN COALESCE(SUM(v.resultado_nao_realizado), 0) END AS resultado_nao_realizado,
+       COUNT(v.ticker) FILTER (WHERE v.cotacao_atual IS NULL) AS papeis_sem_cotacao
+  FROM bolsa.investidor i
+  LEFT JOIN bolsa.vw_posicao_valorizada v ON v.id_investidor = i.id_investidor
+ GROUP BY i.id_investidor, i.nome_completo, i.tipo_investidor
+ ORDER BY valor_mercado DESC NULLS LAST;
 
 -- ---------------------------------------------------------------------
 -- Q03. Extrato de negociações de um investidor (busca pela chave natural).
 -- ---------------------------------------------------------------------
 SELECT data_hora, ticker, empresa, tipo_operacao, quantidade, valor_unitario, valor_total
   FROM bolsa.vw_extrato_negociacoes
- WHERE documento = '52998224725'
+ WHERE documento = '00000000001'
  ORDER BY data_hora;
 
 -- ---------------------------------------------------------------------
@@ -632,8 +717,8 @@ WITH intradiario AS (
       FROM bolsa.cotacao c
       JOIN bolsa.acao a ON a.id_acao = c.id_acao
      WHERE a.ticker = 'PETR4'
-       AND c.data_hora >= timestamptz '2026-09-01 00:00-03'
-       AND c.data_hora <  timestamptz '2026-09-06 00:00-03'
+       AND c.data_hora >= timestamptz '2026-08-31 00:00-03'
+       AND c.data_hora <  timestamptz '2026-09-05 00:00-03'
 )
 SELECT pregao,
        MIN(abertura)    AS abertura,
@@ -658,7 +743,7 @@ SELECT a.ticker,
   FROM bolsa.cotacao c
   JOIN bolsa.acao a ON a.id_acao = c.id_acao
  WHERE a.ticker = 'VALE3'
-   AND c.data_hora::date = date '2026-09-03'
+   AND c.data_hora::date = date '2026-09-02'
 WINDOW w AS (PARTITION BY c.id_acao ORDER BY c.data_hora)
  ORDER BY c.data_hora;
 
@@ -667,25 +752,25 @@ WINDOW w AS (PARTITION BY c.id_acao ORDER BY c.data_hora)
 -- ---------------------------------------------------------------------
 SELECT a.ticker,
        MIN(c.valor)                                            AS minima,
-       (ARRAY_AGG(c.data_hora ORDER BY c.valor ASC))[1]        AS instante_minima,
+       (ARRAY_AGG(c.data_hora ORDER BY c.valor ASC, c.data_hora ASC))[1]        AS instante_minima,
        MAX(c.valor)                                            AS maxima,
-       (ARRAY_AGG(c.data_hora ORDER BY c.valor DESC))[1]       AS instante_maxima,
+       (ARRAY_AGG(c.data_hora ORDER BY c.valor DESC, c.data_hora ASC))[1]       AS instante_maxima,
        ROUND((MAX(c.valor) - MIN(c.valor)) / MIN(c.valor) * 100, 2) AS amplitude_pct
   FROM bolsa.cotacao c
   JOIN bolsa.acao a ON a.id_acao = c.id_acao
- WHERE c.data_hora >= timestamptz '2026-09-01 00:00-03'
-   AND c.data_hora <  timestamptz '2026-09-06 00:00-03'
+ WHERE c.data_hora >= timestamptz '2026-08-31 00:00-03'
+   AND c.data_hora <  timestamptz '2026-09-05 00:00-03'
  GROUP BY a.ticker
  ORDER BY amplitude_pct DESC;
 
 -- ---------------------------------------------------------------------
 -- Q08. Análise retrospectiva: como estava a carteira de um investidor
---      no fim do pregão de 03/09/2026, valorizada pela cotação daquele momento.
+--      no fim do pregão de 02/09/2026, valorizada pela cotação daquele momento.
 -- ---------------------------------------------------------------------
 SELECT *
   FROM bolsa.fn_carteira_em(
-           (SELECT id_investidor FROM bolsa.investidor WHERE documento = '52998224725'),
-           timestamptz '2026-09-03 17:00-03'
+           (SELECT id_investidor FROM bolsa.investidor WHERE documento = '00000000001'),
+           timestamptz '2026-09-02 17:00-03'
        );
 
 -- ---------------------------------------------------------------------
@@ -693,12 +778,14 @@ SELECT *
 --      construída com generate_series + função de análise).
 -- ---------------------------------------------------------------------
 SELECT d::date                        AS data_referencia,
-       COALESCE(SUM(k.valor_posicao), 0) AS patrimonio_em_acoes
-  FROM generate_series(timestamptz '2026-09-01 17:00-03',
-                       timestamptz '2026-09-05 17:00-03',
+       CASE WHEN COUNT(k.ticker) = COUNT(k.cotacao_na_data)
+            THEN COALESCE(SUM(k.valor_posicao), 0) END AS patrimonio_em_acoes,
+       COUNT(k.ticker) FILTER (WHERE k.cotacao_na_data IS NULL) AS papeis_sem_cotacao
+  FROM generate_series(timestamptz '2026-08-31 17:00-03',
+                       timestamptz '2026-09-04 17:00-03',
                        interval '1 day') AS d
   LEFT JOIN LATERAL bolsa.fn_carteira_em(
-           (SELECT id_investidor FROM bolsa.investidor WHERE documento = '11222333000181'),
+           (SELECT id_investidor FROM bolsa.investidor WHERE documento = '00000000000001'),
            d
        ) AS k ON true
  GROUP BY d
@@ -708,37 +795,18 @@ SELECT d::date                        AS data_referencia,
 -- Q10. Resultado REALIZADO nas vendas (preço de venda x preço médio de compra
 --      até o momento da venda) — lucro/prejuízo efetivo por operação.
 -- ---------------------------------------------------------------------
-WITH compras_acumuladas AS (
-    SELECT n.id_negociacao,
-           n.id_investidor,
-           n.id_acao,
-           n.data_hora,
-           n.tipo_operacao,
-           n.quantidade,
-           n.valor_unitario,
-           SUM(n.quantidade * n.valor_unitario)
-               FILTER (WHERE n.tipo_operacao = 'COMPRA')
-               OVER (PARTITION BY n.id_investidor, n.id_acao ORDER BY n.data_hora
-                     ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS custo_acum,
-           SUM(n.quantidade)
-               FILTER (WHERE n.tipo_operacao = 'COMPRA')
-               OVER (PARTITION BY n.id_investidor, n.id_acao ORDER BY n.data_hora
-                     ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS qtd_comprada_acum
-      FROM bolsa.negociacao n
-)
 SELECT i.nome_completo AS investidor,
        a.ticker,
-       c.data_hora     AS data_venda,
-       c.quantidade,
-       c.valor_unitario                                       AS preco_venda,
-       ROUND(c.custo_acum / c.qtd_comprada_acum, 4)           AS preco_medio_compra,
-       ROUND(c.quantidade * (c.valor_unitario - c.custo_acum / c.qtd_comprada_acum), 2)
-                                                              AS resultado_realizado
-  FROM compras_acumuladas c
-  JOIN bolsa.investidor i ON i.id_investidor = c.id_investidor
-  JOIN bolsa.acao a       ON a.id_acao       = c.id_acao
- WHERE c.tipo_operacao = 'VENDA'
- ORDER BY c.data_hora;
+       e.data_hora AS data_venda,
+       e.quantidade,
+       e.valor_unitario AS preco_venda,
+       e.preco_medio_anterior AS preco_medio_compra,
+       e.resultado_realizado
+  FROM bolsa.vw_evolucao_carteira e
+  JOIN bolsa.investidor i ON i.id_investidor = e.id_investidor
+  JOIN bolsa.acao a ON a.id_acao = e.id_acao
+ WHERE e.tipo_operacao = 'VENDA'
+ ORDER BY e.data_hora, e.id_negociacao;
 
 -- ---------------------------------------------------------------------
 -- Q11. Ranking de investidores por volume negociado (função de janela RANK).
@@ -758,11 +826,14 @@ SELECT RANK() OVER (ORDER BY SUM(n.valor_total) DESC) AS posicao,
 --      a valor de mercado e participação percentual.
 -- ---------------------------------------------------------------------
 SELECT setor,
-       SUM(valor_mercado)                                                  AS exposicao,
-       ROUND(SUM(valor_mercado) * 100.0 / SUM(SUM(valor_mercado)) OVER (), 2) AS participacao_pct
+       CASE WHEN COUNT(*) = COUNT(cotacao_atual) THEN SUM(valor_mercado) END AS exposicao,
+       CASE WHEN SUM(COUNT(*) - COUNT(cotacao_atual)) OVER () = 0
+            THEN ROUND(SUM(valor_mercado) * 100.0 / NULLIF(SUM(SUM(valor_mercado)) OVER (), 0), 2)
+       END AS participacao_pct,
+       COUNT(*) FILTER (WHERE cotacao_atual IS NULL) AS papeis_sem_cotacao
   FROM bolsa.vw_posicao_valorizada
  GROUP BY setor
- ORDER BY exposicao DESC;
+ ORDER BY exposicao DESC NULLS LAST;
 
 -- ---------------------------------------------------------------------
 -- Q13. Ações listadas que NÃO tiveram nenhuma negociação (anti-join com NOT EXISTS).
@@ -791,7 +862,8 @@ SELECT i.tipo_investidor,
 -- Q15. Conferência de integridade: a carteira mantida pelo trigger deve
 --      bater com o saldo recalculado a partir das negociações (deve retornar 0 linhas).
 -- ---------------------------------------------------------------------
-SELECT ca.id_investidor, ca.id_acao, ca.quantidade AS qtd_carteira, r.qtd_recalculada
+SELECT COALESCE(ca.id_investidor, r.id_investidor) AS id_investidor,
+       COALESCE(ca.id_acao, r.id_acao) AS id_acao, ca.quantidade AS qtd_carteira, r.qtd_recalculada
   FROM bolsa.carteira ca
   FULL OUTER JOIN (
         SELECT id_investidor, id_acao,
@@ -803,11 +875,11 @@ SELECT ca.id_investidor, ca.id_acao, ca.quantidade AS qtd_carteira, r.qtd_recalc
 
 -- ---------------------------------------------------------------------
 -- Q16. Plano de execução de uma consulta de série temporal — evidência de
---      uso do índice (id_acao, data_hora) definido pela restrição UNIQUE.
+--      plano escolhido pelo otimizador para (id_acao, data_hora) definido pela restrição UNIQUE.
 -- ---------------------------------------------------------------------
 EXPLAIN (COSTS OFF)
 SELECT data_hora, valor
   FROM bolsa.cotacao
- WHERE id_acao = 2
-   AND data_hora BETWEEN timestamptz '2026-09-02 00:00-03' AND timestamptz '2026-09-03 00:00-03'
+ WHERE id_acao = (SELECT id_acao FROM bolsa.acao WHERE ticker = 'PETR4')
+   AND data_hora BETWEEN timestamptz '2026-09-01 00:00-03' AND timestamptz '2026-09-02 00:00-03'
  ORDER BY data_hora;

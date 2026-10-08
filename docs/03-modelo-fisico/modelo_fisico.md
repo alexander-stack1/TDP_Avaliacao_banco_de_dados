@@ -1,56 +1,67 @@
-# Modelo Físico — PostgreSQL 16
+# Modelo Físico PostgreSQL 16
 
-O modelo físico está em [`sql/00_bolsa_completo.sql`](../../sql/00_bolsa_completo.sql) (arquivo único com DDL + DML + DQL, gerado por `scripts/build_sql.sh`). Os fontes separados ficam em `sql/01_ddl.sql`, `sql/02_dml.sql` e `sql/03_dql.sql`.
+Arquivo de entrega: [`sql/00_bolsa_completo.sql`](../../sql/00_bolsa_completo.sql), gerado por `scripts/build_sql.sh`. Os fontes são `01_ddl.sql`, `02_dml.sql` e `03_dql.sql`.
 
-## Como executar
+## Instalação
 
 ```bash
 createdb bolsa_valores
-psql -v ON_ERROR_STOP=1 -d bolsa_valores -f sql/00_bolsa_completo.sql
+psql -X -v ON_ERROR_STOP=1 -d bolsa_valores -f sql/00_bolsa_completo.sql
 ```
 
-Ou, para criar um banco descartável e validar tudo de uma vez: `scripts/validar.sh`.
+O banco precisa ser novo ou não conter o esquema `bolsa`. A criação do esquema e dos objetos é transacional. Uma reexecução é recusada sem apagar dados. DML tem transação própria. Não há `DROP SCHEMA`, criação de papéis globais nem exigência de superusuário. O arquivo fixa o fuso `America/Sao_Paulo` para a demonstração.
 
-## O que o script faz
+## DDL
 
-### DDL
-- Esquema `bolsa` com 6 tabelas (`investidor`, `empresa`, `acao`, `cotacao`, `negociacao`, `carteira`).
-- Chaves primárias `bigint GENERATED ALWAYS AS IDENTITY`; chaves naturais como UNIQUE.
-- Regras de negócio como CHECK: CPF/CNPJ por tipo, formato de ticker, e-mail, quantidades e preços positivos.
-- Índices: todas as FKs indexadas; compostos `(id_investidor, data_hora)` e `(id_acao, data_hora)` para extratos; BRIN em `cotacao.data_hora` para varreduras de série temporal.
-- Coluna gerada `negociacao.valor_total`.
-- Triggers: `trg_negociacao_atualiza_carteira` (atualiza posição e preço médio; rejeita venda sem saldo) e `trg_negociacao_imutavel` (bloqueia UPDATE/DELETE em negociação).
-- Função `fn_carteira_em(investidor, momento)` para análise retrospectiva.
-- Views `vw_cotacao_atual`, `vw_posicao_valorizada`, `vw_extrato_negociacoes`.
-- Papel `bolsa_leitura` somente-leitura (menor privilégio).
-- `COMMENT ON` em todos os objetos relevantes.
+- Seis tabelas: `investidor`, `empresa`, `acao`, `cotacao`, `negociacao`, `carteira`.
+- PKs `bigint GENERATED ALWAYS AS IDENTITY`, exceto a PK composta de carteira. CPF/CNPJ e ticker são chaves naturais únicas. Cotação tem UNIQUE `(id_acao, data_hora)`.
+- Documento, tipo, nome, e-mail e telefone são obrigatórios. CPF/CNPJ validam somente caracteres e comprimento; e-mail tem verificação básica. Quantidades e preços são positivos, valores `NaN` e instantes infinitos são recusados nos fatos temporais.
+- Índices nas FKs; compostos para consultas por investidor/ação e tempo; BRIN no histórico. A utilidade dos índices depende do volume e do plano escolhido pelo otimizador.
+- `negociacao.valor_total` é gerado. A carteira é uma materialização derivada, sem edição direta de linhas.
+- `trg_negociacao_atualiza_carteira`: bloqueia a posição por par, valida ordem temporal estrita e saldo, aplica compra/venda e registra o instante do evento. Uma falha desfaz toda a instrução, incluindo sua alteração de carteira.
+- Bloqueios de UPDATE, DELETE e TRUNCATE em negociação; proteção de escrita direta e TRUNCATE em carteira. Administradores que desabilitam triggers continuam privilegiados.
+- `fn_carteira_em`: recompõe quantidades até um instante, usando somente cotações anteriores ou iguais a ele. Sem cotação, conserva quantidade e devolve preço e valor `NULL`.
+- Quatro views: `vw_cotacao_atual`, `vw_posicao_valorizada`, `vw_extrato_negociacoes`, `vw_evolucao_carteira`.
 
-### DML
-- 6 investidores (4 PF, 2 PJ), 7 empresas, 8 ações.
-- 600 cotações intradiárias (5 pregões × 15 instantes × 8 ações) geradas com `generate_series`, mais a abertura do pregão seguinte.
-- 15 negociações em ordem cronológica: o trigger monta a carteira (inclui recompra com novo preço médio, venda parcial e liquidação total).
-- UPDATE, DELETE e 4 blocos `DO` que demonstram as regras de integridade sem interromper o script.
+## Custo médio e ordem temporal
 
-### DQL (16 consultas)
-| # | Consulta | Recursos |
+Compras ponderam o custo da posição remanescente com o da nova compra. Vendas mantêm o custo médio enquanto resta saldo; ao zerar, o custo médio também zera. A view de evolução recompõe a sequência com CTE recursiva e o mesmo arredondamento de quatro casas utilizado pelo trigger. O lucro por venda é calculado sobre o preço médio anterior àquela venda, com resultado arredondado a centavos.
+
+Operações entram em instantes **estritamente crescentes por par investidor/ação**. Essa é uma premissa adicional do case, não uma exigência literal do enunciado. Uma inserção retroativa ou com instante repetido no mesmo par é recusada. Reprocessamento de histórico, estornos, taxas, tributos e eventos societários estão fora do escopo.
+
+## DML
+
+A carga é sintética, sem dados pessoais reais: 6 investidores (4 PF e 2 PJ), 7 empresas, 8 ações, 19 negociações e 607 cotações finais. Tickers conhecidos são rótulos ilustrativos; as empresas, documentos e valores são didáticos.
+
+São geradas 600 cotações (5 dias úteis simulados de 31/08 a 04/09/2026 × 15 instantes × 8 ações), acrescidas de 8 preços de 08/09 e reduzidas por um DELETE demonstrativo. Há compras, vendas parciais, liquidação e recompra. UPDATE e DELETE são demonstrados em cadastros/cotações. Quatro blocos verificam rejeições esperadas e lançam exceção se a regra deixar de ser aplicada.
+
+## DQL
+
+| Consulta | Finalidade | Recursos |
 |---|---|---|
-| Q01 | Carteira valorizada a mercado | view + DISTINCT ON |
-| Q02 | Patrimônio por investidor | GROUP BY sobre view |
-| Q03 | Extrato por CPF/CNPJ | chave natural |
-| Q04 | Volume por ação, compras × vendas | `FILTER (WHERE …)` |
-| Q05 | OHLC diário a partir do intradiário | `FIRST_VALUE` em janela |
-| Q06 | Variação entre cotações e média móvel | `LAG`, `AVG … ROWS BETWEEN` |
-| Q07 | Máxima e mínima com instante | `ARRAY_AGG … ORDER BY` |
-| Q08 | Carteira em data passada | função `fn_carteira_em` |
-| Q09 | Evolução diária do patrimônio | `generate_series` + `LATERAL` |
-| Q10 | Resultado realizado nas vendas | janela acumulada com `FILTER` |
-| Q11 | Ranking de investidores | `RANK()` |
-| Q12 | Exposição por setor | janela sobre agregado |
-| Q13 | Ações sem negociação | `NOT EXISTS` |
-| Q14 | PF × PJ | `LEFT JOIN` + agregações |
-| Q15 | Conferência carteira × negociações | `FULL OUTER JOIN` (deve retornar 0 linhas) |
-| Q16 | Plano de execução de consulta temporal | `EXPLAIN` (usa o índice da UNIQUE) |
+| Q01 | Posições abertas valorizadas | View e última cotação |
+| Q02 | Patrimônio de todos os investidores, inclusive zerados | LEFT JOIN, identidade do investidor e agregação |
+| Q03 | Extrato por documento | Busca por chave natural |
+| Q04 | Volume por ação, compras e vendas | FILTER e SUM |
+| Q05 | Abertura, máxima, mínima e fechamento | FIRST_VALUE e agregação |
+| Q06 | Variação intradiária e média móvel | LAG e AVG em janela |
+| Q07 | Extremos e seus instantes | ARRAY_AGG com desempate temporal |
+| Q08 | Carteira histórica | fn_carteira_em |
+| Q09 | Evolução diária do patrimônio | generate_series e LATERAL |
+| Q10 | Lucro/prejuízo por venda | Reconstituição recursiva do custo médio móvel |
+| Q11 | Ranking de volume | RANK |
+| Q12 | Exposição por setor | Agregação e janela |
+| Q13 | Ações sem negociação | NOT EXISTS |
+| Q14 | Comparação PF/PJ | LEFT JOIN e agregação |
+| Q15 | Conferência entre saldo e negociações | FULL OUTER JOIN; esperado zero linhas |
+| Q16 | Plano de uma consulta temporal | EXPLAIN; plano pode variar |
 
-## Validação
+Q02, Q09 e Q12 indicam ausência de cotação em vez de apresentar soma incompleta como patrimônio total. Ausência de posição é diferente de ausência de preço.
 
-O script completo foi executado em PostgreSQL 16.13 com `ON_ERROR_STOP` ligado: zero erros, os 4 blocos de demonstração de integridade reportaram `OK`, Q15 retornou 0 linhas e Q16 mostrou `Index Scan using uq_cotacao_acao_hora`.
+## Evidência da revisão
+
+`scripts/validar.sh` executado em 07/10/2026 com PostgreSQL **16.15**, em instância temporária sem rede TCP, usando papel sem superusuário ou CREATEROLE. DDL, DML, 16 DQLs e **42 verificações de regressão** concluíram. A tentativa de reexecutar foi recusada e preservou a carga. Q15 retornou zero linhas; nesta execução Q16 usou `uq_cotacao_acao_hora`.
+
+Os testes incluem identidade de homônimos, telefone obrigatório, unicidade, FKs, preço inválido, instantes retroativos/iguais, proteção de histórico/carteira, recompra após venda parcial e total, preço ausente, bloqueio de preço futuro e duas vendas concorrentes. As fixtures são revertidas; a instância inteira é descartada ao concluir. Logs: `tmp/validacao/execucao.log`, `testes.log`, `reexecucao.log`, `versao.txt`.
+
+Referências técnicas consultadas: [CTEs recursivas](https://www.postgresql.org/docs/16/queries-with.html) e [funções de trigger](https://www.postgresql.org/docs/16/plpgsql-trigger.html) da documentação oficial do PostgreSQL 16.
